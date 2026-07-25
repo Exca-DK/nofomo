@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use tempo_agentic_config::{Config, EvmChain};
 
+use tempo_agentic_cetus::CetusVenue;
 use tempo_agentic_domain::{
     AuditStore, ExecuteTradeRequest, ExecutionView, MarketResearch, MarketResearchRequest,
     QuoteTradeRequest, QuoteView, StoredQuote, TradeVenue, unix_now, unix_now_nanos,
@@ -28,12 +29,15 @@ pub struct AgentService {
 impl AgentService {
     pub fn new(config: Config, audit: Arc<dyn AuditStore>) -> Result<Self> {
         let graph = GraphClient::new(&config.graph)?;
-        let venues: Vec<Arc<dyn TradeVenue>> = vec![Arc::new(UniswapVenue::new(
+        let mut venues: Vec<Arc<dyn TradeVenue>> = vec![Arc::new(UniswapVenue::new(
             &config.uniswap,
             &config.evm,
             graph.clone(),
             config.max_slippage_bps,
         )?)];
+        if config.sui.enabled {
+            venues.push(Arc::new(CetusVenue::new(&config.sui)?));
+        }
         Ok(Self {
             config: Arc::new(config),
             graph,

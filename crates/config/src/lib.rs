@@ -67,23 +67,18 @@ pub struct EvmToken {
 #[derive(Clone, Debug, Deserialize)]
 pub struct SuiConfig {
     pub enabled: bool,
+    pub network: SuiNetwork,
     pub rpc_url: String,
     pub keystore_path: Option<String>,
-    pub pool_id: String,
-    pub deepbook_package_id: String,
-    pub base: SuiToken,
-    pub quote: SuiToken,
-    pub deep_coin_type: String,
-    #[serde(default = "default_clock_id")]
-    pub clock_id: String,
 }
 
-/// Sui token metadata.
-#[derive(Clone, Debug, Deserialize)]
-pub struct SuiToken {
-    pub symbol: String,
-    pub coin_type: String,
-    pub decimals: u8,
+/// Sui network a venue should target. Per-venue on-chain constants (package IDs,
+/// pool registries) are resolved from this, not stored in config.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SuiNetwork {
+    Testnet,
+    Mainnet,
 }
 
 impl Config {
@@ -166,37 +161,6 @@ impl Config {
                 }
             }
             validate_http_url(&self.sui.rpc_url).context("Sui RPC URL")?;
-            for (name, value) in [
-                ("DeepBook pool ID", self.sui.pool_id.as_str()),
-                ("DeepBook package ID", self.sui.deepbook_package_id.as_str()),
-                ("Sui clock ID", self.sui.clock_id.as_str()),
-            ] {
-                validate_sui_id(value).with_context(|| name.to_string())?;
-            }
-            if self
-                .sui
-                .base
-                .symbol
-                .eq_ignore_ascii_case(&self.sui.quote.symbol)
-            {
-                bail!("Sui base and quote symbols must differ");
-            }
-            if !self.sui.base.symbol.eq_ignore_ascii_case("hBTC")
-                && !self.sui.quote.symbol.eq_ignore_ascii_case("hBTC")
-            {
-                bail!("the Sui DeepBook pair must include Hashi hBTC");
-            }
-            for token in [&self.sui.base, &self.sui.quote] {
-                if token.symbol.trim().is_empty() || !token.coin_type.contains("::") {
-                    bail!("invalid Sui token configuration for {}", token.symbol);
-                }
-                if token.decimals > 19 {
-                    bail!("{} has unsupported Sui decimals", token.symbol);
-                }
-            }
-            if !self.sui.deep_coin_type.contains("::") {
-                bail!("invalid DEEP coin type");
-            }
         }
         Ok(())
     }
@@ -215,16 +179,6 @@ fn validate_hex_address(value: &str) -> Result<()> {
         .context("expected a 0x-prefixed hex address")?;
     if raw.len() != 40 || !raw.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         bail!("expected a 20-byte 0x-prefixed hex address");
-    }
-    Ok(())
-}
-
-fn validate_sui_id(value: &str) -> Result<()> {
-    let raw = value
-        .strip_prefix("0x")
-        .context("expected a 0x-prefixed Sui ID")?;
-    if raw.is_empty() || raw.len() > 64 || !raw.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        bail!("expected a 1- to 32-byte 0x-prefixed hex ID");
     }
     Ok(())
 }
@@ -338,10 +292,6 @@ fn default_min_graph_tvl() -> String {
 
 fn default_max_slippage_bps() -> u16 {
     500
-}
-
-fn default_clock_id() -> String {
-    "0x6".into()
 }
 
 #[cfg(test)]

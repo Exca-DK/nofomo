@@ -8,14 +8,14 @@ use serde_json::Value;
 #[serde(rename_all = "snake_case")]
 pub enum VenueName {
     Uniswap,
-    Deepbook,
+    Cetus,
 }
 
 impl VenueName {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Uniswap => "uniswap",
-            Self::Deepbook => "deepbook",
+            Self::Cetus => "cetus",
         }
     }
 }
@@ -124,11 +124,11 @@ pub enum ExecutionPlan {
         input_amount: String,
         quote: Value,
     },
-    Deepbook {
-        input_coin_ids: Vec<String>,
+    Cetus {
+        pool_id: String,
+        a2b: bool,
         input_amount: u64,
-        min_out: u64,
-        base_to_quote: bool,
+        min_amount_out: u64,
     },
 }
 

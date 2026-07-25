@@ -2083,6 +2083,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ethnum"
+version = "1.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40404c3f5f511ec4da6fe866ddf6a717c309fdbb69fbbad7b0f3edab8f2e835f"
+
+[[package]]
 name = "event-listener"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3478,7 +3484,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.10.5",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -4822,12 +4828,31 @@ dependencies = [
  "anyhow",
  "serde_json",
  "sha2",
+ "tempo-agentic-cetus",
  "tempo-agentic-config",
  "tempo-agentic-domain",
  "tempo-agentic-graph",
  "tempo-agentic-storage",
  "tempo-agentic-uniswap",
  "tokio",
+]
+
+[[package]]
+name = "tempo-agentic-cetus"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "ethnum",
+ "prost-types",
+ "serde_json",
+ "sui-crypto",
+ "sui-rpc",
+ "sui-sdk-types",
+ "sui-transaction-builder",
+ "tempo-agentic-config",
+ "tempo-agentic-domain",
+ "tempo-agentic-vault",
 ]
 
 [[package]]
