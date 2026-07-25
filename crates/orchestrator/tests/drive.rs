@@ -251,3 +251,33 @@ async fn a_venue_that_never_advances_is_cut_off() {
     assert_eq!(harness.broadcasts(), 4);
     harness.cleanup();
 }
+
+// The gate stops the one step that spends money and nothing before it: the order
+// really is built and signed, so a blocked run exercises the whole path.
+#[tokio::test]
+async fn a_blocked_gate_signs_but_sends_nothing() {
+    let harness = Harness::new(
+        "gated",
+        Script {
+            allow_broadcast: false,
+            ..Script::default()
+        },
+    )
+    .await;
+
+    let order = harness.drive("o-1").await;
+
+    assert_eq!(harness.signatures(), 1, "the transaction has to be built");
+    assert_eq!(harness.broadcasts(), 0, "and must not leave the process");
+    let OrderState::Failed { tx_hash, reason } = &order.state else {
+        panic!("expected a failed order, got {:?}", order.state);
+    };
+    assert!(tx_hash.is_none());
+    assert!(
+        reason.contains("MAINNET_SWAP"),
+        "say how to open it: {reason}"
+    );
+    // Failed keeps the level free, so the dry run repeats instead of dying.
+    assert_eq!(order.status(), OrderStatus::Failed);
+    harness.cleanup();
+}

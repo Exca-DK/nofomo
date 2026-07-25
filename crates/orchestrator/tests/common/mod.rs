@@ -227,6 +227,7 @@ pub struct Script {
     pub receipts: Vec<Receipt>,
     pub build_fails: bool,
     pub broadcast_fails: bool,
+    pub allow_broadcast: bool,
 }
 
 impl Default for Script {
@@ -236,6 +237,7 @@ impl Default for Script {
             receipts: vec![Receipt::Success],
             build_fails: false,
             broadcast_fails: false,
+            allow_broadcast: true,
         }
     }
 }
@@ -312,6 +314,7 @@ impl Harness {
             venues: vec![venue.clone()],
             chains: HashMap::from([(BASE_ID, chain.clone() as Arc<dyn ChainClient>)]),
             signer: signer.clone(),
+            allow_broadcast: script.allow_broadcast,
         };
         Self {
             levels,
