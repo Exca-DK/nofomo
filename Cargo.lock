@@ -4969,6 +4969,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-agentic-orchestrator"
+version = "0.2.0"
+dependencies = [
+ "alloy-primitives",
+ "anyhow",
+ "async-trait",
+ "serde_json",
+ "tempo-agentic-domain",
+ "tempo-agentic-storage",
+ "tempo-agentic-strategy",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "tempo-agentic-price"
 version = "0.2.0"
 dependencies = [
