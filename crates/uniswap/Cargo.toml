@@ -1,0 +1,21 @@
+[package]
+name = "tempo-agentic-uniswap"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+alloy = { version = "1.6.3", features = ["full", "provider-http", "signers", "signer-local"] }
+anyhow.workspace = true
+async-trait.workspace = true
+eth-keystore = "0.5.0"
+reqwest.workspace = true
+serde_json.workspace = true
+tempo-agentic-config.workspace = true
+tempo-agentic-domain.workspace = true
+tempo-agentic-graph.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
