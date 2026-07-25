@@ -45,6 +45,7 @@ impl UniswapVenue {
         graph: GraphClient,
         max_slippage_bps: u16,
     ) -> Result<Self> {
+        let wallet_address = derive_wallet_address(evm)?;
         Ok(Self {
             http: Client::new(),
             api_url: config.api_url.trim_end_matches('/').to_string(),
@@ -120,7 +121,7 @@ impl UniswapVenue {
                     "tokenOutChainId": chain.chain_id,
                     "tokenIn": input.address,
                     "tokenOut": output.address,
-                    "swapper": self.evm.wallet_address,
+                    "swapper": self.wallet_address,
                     "slippageTolerance": slippage_percent_json(request.slippage_bps)?,
                     "routingPreference": "BEST_PRICE",
                     "protocols": ["V2", "V3", "V4"]
@@ -143,7 +144,7 @@ impl UniswapVenue {
         validate_quote(
             &quote,
             chain.chain_id,
-            &self.evm.wallet_address,
+            &self.wallet_address,
             &input.address,
             &output.address,
             &amount,
@@ -400,6 +401,15 @@ impl TradeVenue for UniswapVenue {
             }
         }
     }
+}
+
+fn derive_wallet_address(evm: &EvmConfig) -> Result<String> {
+    let password = std::fs::read_to_string(&evm.password_file)
+        .with_context(|| format!("cannot read password file {}", evm.password_file))?;
+    let key = eth_keystore::decrypt_key(&evm.keystore_path, password.trim())
+        .with_context(|| format!("cannot decrypt keystore {}", evm.keystore_path))?;
+    let signer = PrivateKeySigner::from_slice(&key).context("invalid private key in keystore")?;
+    Ok(signer.address().to_string())
 }
 
 fn find_token<'a>(chain: &'a EvmChain, symbol: &str) -> Option<&'a EvmToken> {
