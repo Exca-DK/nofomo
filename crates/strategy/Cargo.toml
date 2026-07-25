@@ -1,5 +1,5 @@
 [package]
-name = "tempo-agentic-storage"
+name = "tempo-agentic-strategy"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,13 +9,8 @@ license.workspace = true
 alloy-primitives.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
-serde_json.workspace = true
-sqlx.workspace = true
+serde.workspace = true
 tempo-agentic-domain.workspace = true
-tempo-agentic-strategy.workspace = true
-
-[dev-dependencies]
-tokio.workspace = true
 
 [lints]
 workspace = true

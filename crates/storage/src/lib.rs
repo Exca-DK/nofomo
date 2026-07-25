@@ -1,3 +1,7 @@
+mod strategy;
+
+pub use strategy::{SqliteLevelStore, SqliteOrderStore};
+
 use std::path::Path;
 use std::str::FromStr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -335,7 +339,14 @@ fn now_i64() -> i64 {
         .as_secs() as i64
 }
 
-async fn connect_pool(path: &Path) -> Result<SqlitePool> {
+/// Opens the state database, creating it and applying every migration.
+///
+/// The returned pool enforces foreign keys and uses WAL, so callers that build
+/// their own stores over it get the same guarantees the audit store relies on.
+///
+/// Returns an error if the directory cannot be created, the file cannot be
+/// opened, or a migration fails.
+pub async fn connect_pool(path: &Path) -> Result<SqlitePool> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("cannot create state directory {}", parent.display()))?;
@@ -350,10 +361,15 @@ async fn connect_pool(path: &Path) -> Result<SqlitePool> {
         .connect_with(options)
         .await
         .context("cannot open SQLite state")?;
-    sqlx::raw_sql(include_str!("../migrations/0001_audit.sql"))
-        .execute(&pool)
-        .await
-        .context("cannot run SQLite migrations")?;
+    for migration in [
+        include_str!("../migrations/0001_audit.sql"),
+        include_str!("../migrations/0002_strategy.sql"),
+    ] {
+        sqlx::raw_sql(migration)
+            .execute(&pool)
+            .await
+            .context("cannot run SQLite migrations")?;
+    }
     Ok(pool)
 }
 

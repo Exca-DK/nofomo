@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum VenueName {
     Uniswap,
@@ -16,6 +16,22 @@ impl VenueName {
         match self {
             Self::Uniswap => "uniswap",
             Self::Deepbook => "deepbook",
+        }
+    }
+}
+
+impl std::str::FromStr for VenueName {
+    type Err = anyhow::Error;
+
+    /// Parses the stable wire and SQLite representation produced by [`VenueName::as_str`].
+    ///
+    /// Returns an error for any other value so a corrupted row fails loudly
+    /// instead of silently trading on the wrong venue.
+    fn from_str(value: &str) -> anyhow::Result<Self> {
+        match value {
+            "uniswap" => Ok(Self::Uniswap),
+            "deepbook" => Ok(Self::Deepbook),
+            other => anyhow::bail!("unknown venue '{other}'"),
         }
     }
 }

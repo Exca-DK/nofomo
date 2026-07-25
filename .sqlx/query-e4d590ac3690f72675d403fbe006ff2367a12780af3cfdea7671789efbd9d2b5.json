@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT reserved_amount, state FROM orders WHERE id = 'o-1'",
+  "describe": {
+    "columns": [
+      {
+        "name": "reserved_amount",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "state",
+        "ordinal": 1,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "e4d590ac3690f72675d403fbe006ff2367a12780af3cfdea7671789efbd9d2b5"
+}

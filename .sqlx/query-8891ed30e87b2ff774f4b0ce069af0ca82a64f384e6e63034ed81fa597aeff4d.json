@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, venue, chain, token_in, token_out, side, trigger_price_usd, amount, amount_decimals, slippage_bps FROM levels WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "venue",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "chain",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "token_in",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "token_out",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "side",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "trigger_price_usd",
+        "ordinal": 6,
+        "type_info": "Float"
+      },
+      {
+        "name": "amount",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "amount_decimals",
+        "ordinal": 8,
+        "type_info": "Integer"
+      },
+      {
+        "name": "slippage_bps",
+        "ordinal": 9,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8891ed30e87b2ff774f4b0ce069af0ca82a64f384e6e63034ed81fa597aeff4d"
+}
