@@ -2,6 +2,7 @@
   "state_db_path": "/tmp/tempo-agentic-dev/state.db",
   "quote_ttl_seconds": 120,
   "max_slippage_bps": 500,
+  "dexpaprika_stream_url": "https://streaming.dexpaprika.com",
   "uniswap": {
     "api_url": "https://trade-api.gateway.uniswap.org/v1",
     "api_key_env": "UNISWAP_API_KEY"
