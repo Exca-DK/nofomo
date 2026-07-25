@@ -1,0 +1,11 @@
+/target
+/.env
+/.env.*
+/config.json
+*.db
+*.db-shm
+*.db-wal
+*.keystore
+*keystore*.json
+*.password
+*.secret
