@@ -20,8 +20,7 @@ use tempo_agentic_uniswap::UniswapVenue;
 use tempo_agentic_vault::EvmSigner;
 use tokio::sync::Mutex;
 
-/// How long a broadcast transaction is polled before the call gives up. The
-/// receipt keeps landing on chain afterwards; only this call stops waiting.
+// How long a broadcast transaction is polled before giving up.
 const RECEIPT_TIMEOUT: Duration = Duration::from_secs(120);
 const RECEIPT_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -39,8 +38,9 @@ pub struct AgentService {
 }
 
 impl AgentService {
-    /// Returns an error if the graph client, a chain RPC URL, or the keystore
-    /// cannot be initialized.
+    /// Creates a new agent service using the provided configuration and audit store.
+    ///
+    /// Returns an error if the graph client, a chain RPC client, or the keystore cannot be initialized.
     pub fn new(config: Config, audit: Arc<dyn AuditStore>) -> Result<Self> {
         let graph = GraphClient::new(&config.graph)?;
         let mut chains: HashMap<u64, Arc<dyn ChainClient>> = HashMap::new();
@@ -78,6 +78,27 @@ impl AgentService {
             quotes: Arc::new(Mutex::new(HashMap::new())),
             sequence: Arc::new(AtomicU64::new(1)),
         })
+    }
+
+    /// Creates an agent service directly from existing dependencies.
+    pub fn from_parts(
+        config: Config,
+        graph: GraphClient,
+        venues: Vec<Arc<dyn TradeVenue>>,
+        chains: HashMap<u64, Arc<dyn ChainClient>>,
+        signer: Arc<dyn Signer>,
+        audit: Arc<dyn AuditStore>,
+    ) -> Self {
+        Self {
+            config: Arc::new(config),
+            graph,
+            venues: Arc::new(venues),
+            chains: Arc::new(chains),
+            signer,
+            audit,
+            quotes: Arc::new(Mutex::new(HashMap::new())),
+            sequence: Arc::new(AtomicU64::new(1)),
+        }
     }
 
     /// Queries token market data across requested chains.
@@ -173,11 +194,9 @@ impl AgentService {
         Ok(result)
     }
 
-    /// Runs a plan's steps, appending a reference for each broadcast transaction.
-    ///
-    /// Every step is signed, broadcast, and confirmed in turn. `transactions`
-    /// accumulates as it goes so the caller keeps what already landed even when
-    /// a later step fails.
+    // Runs a plan's steps, appending a reference for each broadcast transaction.
+    //
+    // Returns an error if any step fails to build, sign, broadcast, or confirm.
     async fn run_plan(
         &self,
         venue_name: &str,
@@ -217,10 +236,9 @@ impl AgentService {
     }
 }
 
-/// Polls until the transaction is mined, or the timeout expires.
-///
-/// Returns an error if it reverted or did not appear in time. A timeout does not
-/// mean the transaction failed; only that this call stopped waiting.
+// Polls until the transaction is mined, or the timeout expires.
+//
+// Returns an error if the transaction reverted or was not confirmed within the timeout.
 async fn await_receipt(chain: &dyn ChainClient, tx_hash: &str) -> Result<()> {
     let deadline = tokio::time::Instant::now() + RECEIPT_TIMEOUT;
     loop {

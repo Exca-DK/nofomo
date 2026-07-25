@@ -16,7 +16,6 @@ use tempo_agentic_vault::{ChainVault, EvmVault, SuiVault};
 
 mod integrate;
 
-
 #[derive(Parser)]
 #[command(name = "tempo-agentic-admin", version)]
 struct Cli {

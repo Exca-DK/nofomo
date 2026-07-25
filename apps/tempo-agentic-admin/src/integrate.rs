@@ -1,8 +1,9 @@
+use anyhow::{Context, Result};
+use serde_json::{Value, json};
 use std::fs;
 use std::path::PathBuf;
-use anyhow::{Context, Result};
-use serde_json::{json, Value};
 
+/// Result of an integration operation.
 #[derive(Debug, PartialEq)]
 pub enum IntegrateOutcome {
     Added,
@@ -21,6 +22,9 @@ fn openclaw_config_path() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".openclaw").join("openclaw.json"))
 }
 
+/// Integrates or removes the tempo-agentic MCP server and skill in OpenClaw.
+///
+/// Returns an error if reading or writing the OpenClaw configuration fails.
 pub async fn openclaw(config_path: &str, remove: bool) -> Result<()> {
     let Some(path) = openclaw_config_path() else {
         println!("no OpenClaw config found (OPENCLAW_HOME or HOME not set)");
@@ -44,17 +48,21 @@ pub async fn openclaw(config_path: &str, remove: bool) -> Result<()> {
 
     if outcome != IntegrateOutcome::NothingToRemove {
         let formatted = serde_json::to_string_pretty(&root)?;
-        // Simple write_to_string (since we don't have tempo_fs here, atomic write isn't strictly necessary for a hackathon)
         fs::write(&path, formatted).with_context(|| format!("failed to write {path:?}"))?;
     }
 
     match outcome {
         IntegrateOutcome::Added => println!("added mcp.servers.tempo-agentic to openclaw.json"),
         IntegrateOutcome::Updated => println!("updated mcp.servers.tempo-agentic in openclaw.json"),
-        IntegrateOutcome::Removed => println!("removed mcp.servers.tempo-agentic from openclaw.json"),
+        IntegrateOutcome::Removed => {
+            println!("removed mcp.servers.tempo-agentic from openclaw.json")
+        }
         IntegrateOutcome::NothingToRemove => println!("mcp.servers.tempo-agentic was not present"),
     }
-    if matches!(outcome, IntegrateOutcome::Added | IntegrateOutcome::Updated | IntegrateOutcome::Removed) {
+    if matches!(
+        outcome,
+        IntegrateOutcome::Added | IntegrateOutcome::Updated | IntegrateOutcome::Removed
+    ) {
         println!("run `openclaw mcp reload` to pick up the change");
     }
 
@@ -79,8 +87,6 @@ fn write_skill(remove: bool) -> Result<()> {
     } else {
         fs::create_dir_all(&skill_dir).context("failed to create skill dir")?;
         let skill_path = skill_dir.join("SKILL.md");
-        // We include the SKILL.md from docs relative to this source file.
-        // apps/tempo-agentic-admin/src/integrate.rs -> ../../../docs/SKILL.md
         let content = include_str!("../../../docs/SKILL.md");
         fs::write(&skill_path, content).context("failed to write SKILL.md")?;
     }
@@ -112,7 +118,7 @@ fn upsert_entry(root: &mut Value, config_path: &str) -> Result<IntegrateOutcome>
         .or_insert_with(|| json!({}))
         .as_object_mut()
         .context("mcp.servers must be an object")?;
-    
+
     let existed = servers.contains_key("tempo-agentic");
     servers.insert("tempo-agentic".to_string(), server);
 
