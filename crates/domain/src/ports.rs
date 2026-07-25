@@ -3,8 +3,21 @@ use async_trait::async_trait;
 
 use crate::{
     ExecuteTradeRequest, ExecutionView, MarketResearch, MarketResearchRequest, QuoteTradeRequest,
-    QuoteView,
+    QuoteView, SignedTx, UnsignedTx,
 };
+
+/// Signing port. Key material never leaves the implementation.
+#[async_trait]
+pub trait Signer: Send + Sync {
+    /// The address this signer controls, 0x-prefixed.
+    fn address(&self) -> &str;
+
+    /// Signs a transaction and reports the hash it will have on chain.
+    ///
+    /// Returns an error if the transaction's fields are malformed. No network
+    /// access happens, so the result can be persisted before broadcasting.
+    async fn sign(&self, tx: &UnsignedTx) -> Result<SignedTx>;
+}
 
 /// Storage port for recording market research, quotes, and execution attempts.
 #[async_trait]

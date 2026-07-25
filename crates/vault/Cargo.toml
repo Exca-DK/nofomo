@@ -8,13 +8,18 @@ license.workspace = true
 [dependencies]
 alloy = { version = "1.6.3", features = ["full", "provider-http", "signers", "signer-local"] }
 anyhow.workspace = true
+async-trait.workspace = true
 eth-keystore = "0.5.0"
+tempo-agentic-domain.workspace = true
 rand = "0.8"
 serde_json.workspace = true
 sui-crypto = { git = "https://github.com/MystenLabs/sui-rust-sdk", version = "0.3.1", features = ["ed25519"] }
 sui-rpc = { git = "https://github.com/MystenLabs/sui-rust-sdk", version = "0.3.2" }
 sui-sdk-types = { git = "https://github.com/MystenLabs/sui-rust-sdk", version = "0.3.2" }
 sui-transaction-builder = { git = "https://github.com/MystenLabs/sui-rust-sdk", version = "0.3.2" }
+
+[dev-dependencies]
+tokio.workspace = true
 
 [lints]
 workspace = true

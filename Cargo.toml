@@ -18,6 +18,7 @@ tempo-agentic-graph = { path = "crates/graph" }
 tempo-agentic-mcp = { path = "crates/mcp" }
 tempo-agentic-vault = { path = "crates/vault" }
 tempo-agentic-strategy = { path = "crates/strategy" }
+tempo-agentic-chain = { path = "crates/chain" }
 
 alloy-primitives = { version = "1.6", features = ["serde"] }
 anyhow = "1"
