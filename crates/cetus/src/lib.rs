@@ -18,9 +18,8 @@ use sui_sdk_types::{Address, TypeTag};
 use sui_transaction_builder::{Function, ObjectInput, TransactionBuilder};
 use tempo_agentic_config::SuiConfig;
 use tempo_agentic_domain::{
-    ExecutionPlan, QuoteDraft, QuoteTradeRequest, TradeVenue, TransactionReference, VenueExecution,
+    ExecutionPlan, QuoteDraft, QuoteTradeRequest, TradeVenue, TransactionReference,
 };
-
 const CLOCK_OBJECT_ID: &str = "0x6";
 const MAX_TICKS_FETCHED: usize = 20_000;
 
@@ -202,7 +201,20 @@ impl TradeVenue for CetusVenue {
         self.candidate(&mut client, request).await
     }
 
-    async fn execute(&self, plan: &ExecutionPlan) -> Result<VenueExecution> {
+    async fn steps(&self, _plan: &ExecutionPlan) -> Result<Vec<tempo_agentic_domain::ExecStep>> {
+        bail!("Cetus does not support stepped execution");
+    }
+
+    async fn build(
+        &self,
+        _plan: &ExecutionPlan,
+        _step: tempo_agentic_domain::ExecStep,
+        _ctx: &tempo_agentic_domain::TxContext,
+    ) -> Result<tempo_agentic_domain::UnsignedTx> {
+        bail!("Cetus does not support transaction building via TxContext");
+    }
+
+    async fn execute(&self, plan: &ExecutionPlan) -> Result<Vec<TransactionReference>> {
         let ExecutionPlan::Cetus {
             pool_id,
             a2b,
@@ -352,14 +364,10 @@ impl TradeVenue for CetusVenue {
             bail!("Cetus swap transaction reverted");
         }
 
-        Ok(VenueExecution {
-            venue: "cetus".into(),
-            chain: "sui".into(),
-            transactions: vec![TransactionReference {
-                kind: "sui_digest".into(),
-                id: executed.digest.unwrap_or_default(),
-            }],
-        })
+        Ok(vec![TransactionReference {
+            kind: "sui_digest".into(),
+            id: executed.digest.unwrap_or_default(),
+        }])
     }
 }
 

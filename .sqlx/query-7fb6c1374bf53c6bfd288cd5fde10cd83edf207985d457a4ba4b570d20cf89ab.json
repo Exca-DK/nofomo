@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE levels SET venue = 'bogus' WHERE id = 'l-1'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "7fb6c1374bf53c6bfd288cd5fde10cd83edf207985d457a4ba4b570d20cf89ab"
+}

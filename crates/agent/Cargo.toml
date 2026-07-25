@@ -9,12 +9,14 @@ license.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tempo-agentic-chain.workspace = true
 tempo-agentic-config.workspace = true
 tempo-agentic-domain.workspace = true
 tempo-agentic-graph.workspace = true
 tempo-agentic-storage.workspace = true
 tempo-agentic-uniswap.workspace = true
 tempo-agentic-cetus.workspace = true
+tempo-agentic-vault.workspace = true
 tokio.workspace = true
 
 [lints]

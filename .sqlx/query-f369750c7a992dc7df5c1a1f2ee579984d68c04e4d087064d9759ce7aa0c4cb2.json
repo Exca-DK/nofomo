@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO levels( id, venue, chain, token_in, token_out, side, trigger_price_usd, amount, amount_decimals, slippage_bps, created_at ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch()) ON CONFLICT(id) DO UPDATE SET venue = excluded.venue, chain = excluded.chain, token_in = excluded.token_in, token_out = excluded.token_out, side = excluded.side, trigger_price_usd = excluded.trigger_price_usd, amount = excluded.amount, amount_decimals = excluded.amount_decimals, slippage_bps = excluded.slippage_bps",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": []
+  },
+  "hash": "f369750c7a992dc7df5c1a1f2ee579984d68c04e4d087064d9759ce7aa0c4cb2"
+}

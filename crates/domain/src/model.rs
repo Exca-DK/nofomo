@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum VenueName {
     Uniswap,
@@ -16,6 +16,22 @@ impl VenueName {
         match self {
             Self::Uniswap => "uniswap",
             Self::Cetus => "cetus",
+        }
+    }
+}
+
+impl std::str::FromStr for VenueName {
+    type Err = anyhow::Error;
+
+    /// Parses the stable wire and SQLite representation produced by [`VenueName::as_str`].
+    ///
+    /// Returns an error for any other value so a corrupted row fails loudly
+    /// instead of silently trading on the wrong venue.
+    fn from_str(value: &str) -> anyhow::Result<Self> {
+        match value {
+            "uniswap" => Ok(Self::Uniswap),
+            "cetus" => Ok(Self::Cetus),
+            other => anyhow::bail!("unknown venue '{other}'"),
         }
     }
 }
@@ -101,7 +117,7 @@ pub struct TransactionReference {
     pub id: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct QuoteDraft {
     pub venue: String,
     pub chain: String,
@@ -114,12 +130,14 @@ pub struct QuoteDraft {
     pub plan: ExecutionPlan,
 }
 
-#[derive(Clone, Debug, Serialize)]
+// Deserialize is required so a stored plan can be replayed after a restart:
+// execution now spans several persisted steps. No `Eq`, because the embedded
+// venue quote is a `serde_json::Value`.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum ExecutionPlan {
     Uniswap {
         chain_name: String,
         chain_id: u64,
-        rpc_url: String,
         input_token: String,
         input_amount: String,
         quote: Value,

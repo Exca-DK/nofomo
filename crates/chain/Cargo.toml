@@ -1,0 +1,16 @@
+[package]
+name = "tempo-agentic-chain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+alloy = { version = "1.6.3", features = ["full", "provider-http"] }
+anyhow.workspace = true
+async-trait.workspace = true
+tempo-agentic-domain.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

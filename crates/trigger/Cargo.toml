@@ -1,0 +1,24 @@
+[package]
+name = "tempo-agentic-trigger"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tempo-agentic-config.workspace = true
+tempo-agentic-domain.workspace = true
+tempo-agentic-price.workspace = true
+tempo-agentic-strategy.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+alloy-primitives.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+tempo-agentic-storage.workspace = true
+
+[lints]
+workspace = true

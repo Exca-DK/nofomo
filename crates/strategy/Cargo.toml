@@ -1,0 +1,19 @@
+[package]
+name = "tempo-agentic-strategy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+alloy-primitives.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+tempo-agentic-domain.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true
