@@ -3,10 +3,11 @@ use tempo_agentic_price::{
 };
 
 const NOW: i64 = 1_800_000_000;
+const BASE_CHAIN_ID: u64 = 8453;
 
 fn tick(published_at: i64) -> PriceTick {
     PriceTick {
-        pair: PricePair::new("base", "0x4200000000000000000000000000000000000006"),
+        pair: PricePair::new(BASE_CHAIN_ID, "0x4200000000000000000000000000000000000006"),
         price_usd: 1_600.0,
         published_at,
     }

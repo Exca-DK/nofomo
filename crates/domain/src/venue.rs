@@ -52,4 +52,9 @@ pub trait TradeVenue: Send + Sync {
         step: ExecStep,
         ctx: &TxContext,
     ) -> Result<UnsignedTx>;
+
+    /// Executes the plan monolithically. Used by non-EVM venues.
+    async fn execute(&self, _plan: &ExecutionPlan) -> Result<Vec<crate::TransactionReference>> {
+        anyhow::bail!("monolithic execution is not supported by this venue");
+    }
 }

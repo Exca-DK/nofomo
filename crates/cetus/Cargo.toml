@@ -1,0 +1,23 @@
+[package]
+name = "tempo-agentic-cetus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+ethnum = "1"
+prost-types = "0.14"
+serde_json.workspace = true
+sui-crypto = { git = "https://github.com/MystenLabs/sui-rust-sdk", version = "0.3.1", features = ["ed25519"] }
+sui-rpc = { git = "https://github.com/MystenLabs/sui-rust-sdk", version = "0.3.2" }
+sui-sdk-types = { git = "https://github.com/MystenLabs/sui-rust-sdk", version = "0.3.2" }
+sui-transaction-builder = { git = "https://github.com/MystenLabs/sui-rust-sdk", version = "0.3.2" }
+tempo-agentic-config.workspace = true
+tempo-agentic-domain.workspace = true
+tempo-agentic-vault.workspace = true
+
+[lints]
+workspace = true

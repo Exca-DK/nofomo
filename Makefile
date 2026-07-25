@@ -27,6 +27,11 @@ schema:
 # it, so a failure here leaves an empty cache behind.
 # Needs: cargo install sqlx-cli --no-default-features --features sqlite,rustls
 prepare: schema
+	# Force a rebuild of the crate holding the macros. `cargo sqlx prepare`
+	# clears .sqlx and repopulates it from whatever compiles; cargo does not
+	# treat .sqlx as an input, so an up-to-date build collects nothing and
+	# leaves the cache empty.
+	cargo clean -p tempo-agentic-storage
 	cargo sqlx prepare --workspace -- --all-targets
 
 check: schema

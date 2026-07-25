@@ -15,6 +15,7 @@ tempo-agentic-domain.workspace = true
 tempo-agentic-graph.workspace = true
 tempo-agentic-storage.workspace = true
 tempo-agentic-uniswap.workspace = true
+tempo-agentic-cetus.workspace = true
 tempo-agentic-vault.workspace = true
 tokio.workspace = true
 

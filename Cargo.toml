@@ -14,12 +14,15 @@ tempo-agentic-config = { path = "crates/config" }
 tempo-agentic-storage = { path = "crates/storage" }
 tempo-agentic-graph = { path = "crates/graph" }
     tempo-agentic-uniswap = { path = "crates/uniswap" }
+    tempo-agentic-cetus = { path = "crates/cetus" }
     tempo-agentic-agent = { path = "crates/agent" }
 tempo-agentic-mcp = { path = "crates/mcp" }
 tempo-agentic-vault = { path = "crates/vault" }
 tempo-agentic-strategy = { path = "crates/strategy" }
 tempo-agentic-chain = { path = "crates/chain" }
 tempo-agentic-price = { path = "crates/price" }
+tempo-agentic-price-dexpaprika = { path = "crates/price-dexpaprika" }
+tempo-agentic-trigger = { path = "crates/trigger" }
 
 alloy-primitives = { version = "1.6", features = ["serde"] }
 anyhow = "1"
@@ -27,13 +30,14 @@ async-trait = "0.1"
 clap = { version = "4", features = ["derive", "env"] }
 futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
+reqwest-eventsource = "0.6"
 rmcp = { version = "2.2", features = ["server", "macros", "transport-io"] }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["macros", "runtime-tokio", "sqlite"] }
-tokio = { version = "1", features = ["io-std", "macros", "process", "rt-multi-thread", "sync"] }
+tokio = { version = "1", features = ["io-std", "macros", "process", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

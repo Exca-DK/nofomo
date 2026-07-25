@@ -1,9 +1,11 @@
-use tempo_agentic_price::{PricePair, chain_slug, parse_tick};
+use tempo_agentic_price::PricePair;
+use tempo_agentic_price_dexpaprika::{chain_slug, parse_tick};
 
+const BASE_CHAIN_ID: u64 = 8453;
 const WETH_BASE: &str = "0x4200000000000000000000000000000000000006";
 
 fn pair() -> PricePair {
-    PricePair::new("base", WETH_BASE)
+    PricePair::new(BASE_CHAIN_ID, WETH_BASE)
 }
 
 // A payload captured from the live feed. Note the price arrives as a string, not
@@ -48,7 +50,7 @@ fn a_wrapped_payload_parses() {
 #[test]
 fn address_casing_does_not_matter() {
     let checksummed = "0x4200000000000000000000000000000000000006";
-    let lowercase = PricePair::new("BASE", checksummed.to_ascii_lowercase());
+    let lowercase = PricePair::new(BASE_CHAIN_ID, checksummed.to_ascii_lowercase());
     let payload =
         format!(r#"{{"address":"{checksummed}","chain":"base","price":1.0,"timestamp":1}}"#);
     assert!(parse_tick(&lowercase, &payload).is_some());
@@ -116,4 +118,14 @@ fn every_supported_chain_has_a_slug() {
 fn an_unsupported_chain_has_no_fallback_slug() {
     assert_eq!(chain_slug(137), None);
     assert_eq!(chain_slug(0), None);
+}
+
+// The pair is chain-agnostic, so it can name a chain this provider cannot quote.
+// That must not be read as a quote for some other chain.
+#[test]
+fn a_frame_for_a_chain_this_provider_cannot_quote_is_rejected() {
+    let polygon = PricePair::new(137, WETH_BASE);
+    let payload =
+        format!(r#"{{"address":"{WETH_BASE}","chain":"polygon","price":1.0,"timestamp":1}}"#);
+    assert_eq!(parse_tick(&polygon, &payload), None);
 }
