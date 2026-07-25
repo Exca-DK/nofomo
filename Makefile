@@ -7,20 +7,29 @@ define load_env
 	set -a && . $(ENV_LOCAL) && set +a &&
 endef
 
-.PHONY: check build bootstrap run health prepare docker-build docker-run help
+# Every `sqlx::query!` is validated against this database, which is rebuilt from
+# the migrations on each run. Rebuilding rather than reusing is the point: a
+# schema that can drift from the migrations would validate queries against
+# something nobody ships.
+export DATABASE_URL = sqlite://$(SQLX_DEV_DB)
 
-# Rebuilds the throwaway schema `sqlx::query!` type-checks against, then refreshes
-# the committed .sqlx cache so builds work without a DATABASE_URL. Re-run after
-# changing any SQL, or the next build fails on a stale cache.
-# --all-targets matters: without it the cache misses queries used only in tests.
-# Needs: cargo install sqlx-cli --no-default-features --features sqlite,rustls
-prepare:
+.PHONY: schema check build bootstrap run health prepare docker-build docker-run help
+
+schema:
 	rm -f $(SQLX_DEV_DB)
-	sqlite3 $(SQLX_DEV_DB) < crates/storage/migrations/0001_audit.sql
-	sqlite3 $(SQLX_DEV_DB) < crates/storage/migrations/0002_strategy.sql
-	DATABASE_URL=sqlite://$(SQLX_DEV_DB) cargo sqlx prepare --workspace -- --all-targets
+	for f in crates/storage/migrations/*.sql; do sqlite3 $(SQLX_DEV_DB) < $$f; done
 
-check:
+# Refreshes the committed .sqlx cache, which lets a fresh clone build before it
+# has a database. The cache is a convenience, never the thing queries are checked
+# against — `check` always validates live.
+# --all-targets matters: without it the cache misses queries used only in tests.
+# Never silence this target: `cargo sqlx prepare` clears .sqlx before repopulating
+# it, so a failure here leaves an empty cache behind.
+# Needs: cargo install sqlx-cli --no-default-features --features sqlite,rustls
+prepare: schema
+	cargo sqlx prepare --workspace -- --all-targets
+
+check: schema
 	cargo fmt --all -- --check
 	cargo test --workspace
 	cargo clippy --workspace --all-targets -- -D warnings

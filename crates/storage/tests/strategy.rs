@@ -2,8 +2,9 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use alloy_primitives::U256;
+use serde_json::json;
 use sqlx::SqlitePool;
-use tempo_agentic_domain::VenueName;
+use tempo_agentic_domain::{ExecStep, ExecutionPlan, VenueName};
 use tempo_agentic_storage::{SqliteLevelStore, SqliteOrderStore, connect_pool};
 use tempo_agentic_strategy::{Level, LevelStore, Order, OrderState, OrderStatus, OrderStore, Side};
 
@@ -55,6 +56,16 @@ fn level() -> Level {
     }
 }
 
+fn plan() -> ExecutionPlan {
+    ExecutionPlan::Uniswap {
+        chain_name: "base".into(),
+        chain_id: 8453,
+        input_token: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913".into(),
+        input_amount: "1000000".into(),
+        quote: json!({"tradeType": "EXACT_INPUT", "output": {"amount": "321"}}),
+    }
+}
+
 #[tokio::test]
 async fn level_round_trips_including_a_max_u256_amount() {
     let fixture = Fixture::new("level-roundtrip").await;
@@ -103,21 +114,27 @@ async fn every_order_state_round_trips_with_exact_amounts() {
             amount_in,
             action_id: "act-1".into(),
         },
+        // Every step appears at least once: a resumed order has to know which
+        // transaction it was on, not merely which phase.
         OrderState::SwapReady {
+            step: ExecStep::Cancel,
             amount_in,
             withdraw_action_id: None,
         },
         OrderState::SwapReady {
+            step: ExecStep::Approval,
             amount_in,
             withdraw_action_id: Some("act-1".into()),
         },
         OrderState::Broadcasting {
+            step: ExecStep::Approval,
             amount_in,
             signed_tx: "0x02f8".into(),
             tx_hash: "0xhash".into(),
             withdraw_action_id: Some("act-1".into()),
         },
         OrderState::Submitted {
+            step: ExecStep::Swap,
             amount_in,
             tx_hash: "0xhash".into(),
             withdraw_action_id: None,
@@ -142,7 +159,7 @@ async fn every_order_state_round_trips_with_exact_amounts() {
     ];
 
     for (index, state) in states.into_iter().enumerate() {
-        let mut order = Order::new(format!("o-{index}"), &level(), 100 + index as i64);
+        let mut order = Order::new(format!("o-{index}"), &level(), plan(), 100 + index as i64);
         order.state = state;
         order.swap_attempts = 3;
         order.swap_retry_after_ts = Some(1_700_000_000);
@@ -167,7 +184,7 @@ async fn every_order_state_round_trips_with_exact_amounts() {
 async fn scalar_amounts_are_decimal_and_state_amounts_are_hex() {
     let fixture = Fixture::new("encoding").await;
     fixture.levels.upsert_level(&level()).await.unwrap();
-    let order = Order::new("o-1".into(), &level(), 1);
+    let order = Order::new("o-1".into(), &level(), plan(), 1);
     fixture.orders.upsert_order(&order).await.unwrap();
 
     let row = sqlx::query!("SELECT reserved_amount, state FROM orders WHERE id = 'o-1'")
@@ -198,7 +215,7 @@ async fn scalar_amounts_are_decimal_and_state_amounts_are_hex() {
 async fn denormalized_columns_track_the_state() {
     let fixture = Fixture::new("denormalized").await;
     fixture.levels.upsert_level(&level()).await.unwrap();
-    let mut order = Order::new("o-1".into(), &level(), 1);
+    let mut order = Order::new("o-1".into(), &level(), plan(), 1);
     fixture.orders.upsert_order(&order).await.unwrap();
 
     order.state = OrderState::Filled {
@@ -212,6 +229,41 @@ async fn denormalized_columns_track_the_state() {
         .unwrap();
     assert_eq!(row.status, OrderStatus::Filled.as_str());
     assert_eq!(row.tx_hash.as_deref(), Some("0xhash"));
+    fixture.cleanup();
+}
+
+#[tokio::test]
+async fn the_execution_plan_survives_the_round_trip() {
+    let fixture = Fixture::new("plan-roundtrip").await;
+    fixture.levels.upsert_level(&level()).await.unwrap();
+    let order = Order::new("o-1".into(), &level(), plan(), 1);
+    fixture.orders.upsert_order(&order).await.unwrap();
+
+    let loaded = fixture.orders.get_order("o-1").await.unwrap().unwrap();
+    assert_eq!(loaded.plan, plan());
+    // The embedded venue quote is opaque JSON; it has to come back byte-for-byte
+    // or a resumed swap would be rebuilt from a different route.
+    let ExecutionPlan::Uniswap { quote, .. } = &loaded.plan else {
+        panic!("expected a Uniswap plan");
+    };
+    assert_eq!(quote.pointer("/output/amount").unwrap(), "321");
+    fixture.cleanup();
+}
+
+// An order whose plan will not deserialize cannot be resumed, so reading it must
+// fail rather than hand back something that looks executable.
+#[tokio::test]
+async fn an_order_without_a_usable_plan_is_an_error() {
+    let fixture = Fixture::new("empty-plan").await;
+    fixture.levels.upsert_level(&level()).await.unwrap();
+    let order = Order::new("o-1".into(), &level(), plan(), 1);
+    fixture.orders.upsert_order(&order).await.unwrap();
+    sqlx::query!("UPDATE orders SET plan = '{}' WHERE id = 'o-1'")
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+
+    assert!(fixture.orders.get_order("o-1").await.is_err());
     fixture.cleanup();
 }
 
@@ -231,7 +283,7 @@ async fn an_unknown_venue_on_disk_is_an_error_not_a_default() {
 #[tokio::test]
 async fn an_order_cannot_reference_a_missing_level() {
     let fixture = Fixture::new("fk").await;
-    let order = Order::new("o-1".into(), &level(), 1);
+    let order = Order::new("o-1".into(), &level(), plan(), 1);
     assert!(fixture.orders.upsert_order(&order).await.is_err());
     fixture.cleanup();
 }

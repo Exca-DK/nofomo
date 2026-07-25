@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE orders SET plan = '{}' WHERE id = 'o-1'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "a46229c8e4da166daf93d0185b74af4e382ad7f45f703e7e0d1cf77ae958387c"
+}

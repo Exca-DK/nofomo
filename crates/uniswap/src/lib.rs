@@ -24,6 +24,9 @@ pub struct UniswapVenue {
     api_url: String,
     api_key: String,
     evm: EvmConfig,
+    /// Taker address for quotes and approvals. Supplied by the caller from the
+    /// signer, so the venue never has to touch key material to learn it.
+    wallet_address: String,
     chains: HashMap<u64, Arc<dyn ChainClient>>,
     graph: GraphClient,
     max_slippage_bps: u16,
@@ -41,16 +44,17 @@ impl UniswapVenue {
     pub fn new(
         config: &UniswapConfig,
         evm: &EvmConfig,
+        wallet_address: String,
         chains: HashMap<u64, Arc<dyn ChainClient>>,
         graph: GraphClient,
         max_slippage_bps: u16,
     ) -> Result<Self> {
-        let wallet_address = derive_wallet_address(evm)?;
         Ok(Self {
             http: Client::new(),
             api_url: config.api_url.trim_end_matches('/').to_string(),
             api_key: secret_from_env(&config.api_key_env)?,
             evm: evm.clone(),
+            wallet_address,
             chains,
             graph,
             max_slippage_bps,
@@ -74,7 +78,7 @@ impl UniswapVenue {
         self.api_post(
             "check_approval",
             &json!({
-                "walletAddress": self.evm.wallet_address,
+                "walletAddress": self.wallet_address,
                 "token": input_token,
                 "amount": input_amount,
                 "chainId": chain_id
@@ -92,7 +96,7 @@ impl UniswapVenue {
 
         let balance = self
             .chain_client(chain.chain_id)?
-            .balance_of(&input.address, &self.evm.wallet_address)
+            .balance_of(&input.address, &self.wallet_address)
             .await?;
         if compare_decimal_integers(&balance, &amount) == Ordering::Less {
             bail!(
@@ -189,7 +193,6 @@ impl UniswapVenue {
                 plan: ExecutionPlan::Uniswap {
                     chain_name: chain.name.clone(),
                     chain_id: chain.chain_id,
-                    rpc_url: chain.rpc_url.clone(),
                     input_token: input.address.clone(),
                     input_amount: amount,
                     quote,
@@ -234,7 +237,7 @@ impl UniswapVenue {
     ) -> Result<UnsignedTx> {
         validate_transaction(
             transaction,
-            &self.evm.wallet_address,
+            &self.wallet_address,
             ctx.chain_id,
             expected_to,
             expected_value,
@@ -247,7 +250,7 @@ impl UniswapVenue {
             Some(gas_limit) => gas_limit,
             None => {
                 self.chain_client(ctx.chain_id)?
-                    .estimate_gas(&self.evm.wallet_address, &to, &value, &data)
+                    .estimate_gas(&self.wallet_address, &to, &value, &data)
                     .await?
             }
         };
@@ -401,15 +404,6 @@ impl TradeVenue for UniswapVenue {
             }
         }
     }
-}
-
-fn derive_wallet_address(evm: &EvmConfig) -> Result<String> {
-    let password = std::fs::read_to_string(&evm.password_file)
-        .with_context(|| format!("cannot read password file {}", evm.password_file))?;
-    let key = eth_keystore::decrypt_key(&evm.keystore_path, password.trim())
-        .with_context(|| format!("cannot decrypt keystore {}", evm.keystore_path))?;
-    let signer = PrivateKeySigner::from_slice(&key).context("invalid private key in keystore")?;
-    Ok(signer.address().to_string())
 }
 
 fn find_token<'a>(chain: &'a EvmChain, symbol: &str) -> Option<&'a EvmToken> {

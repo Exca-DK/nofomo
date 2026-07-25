@@ -1,6 +1,6 @@
 use alloy_primitives::U256;
 use serde::{Deserialize, Serialize};
-use tempo_agentic_domain::VenueName;
+use tempo_agentic_domain::{ExecStep, ExecutionPlan, VenueName};
 
 use crate::level::Level;
 
@@ -45,15 +45,17 @@ pub enum OrderState {
         amount_in: U256,
         action_id: String,
     },
-    /// Funds are in hand and the swap can be signed. `withdraw_action_id` is
+    /// Funds are in hand and `step` can be signed. `withdraw_action_id` is
     /// `None` when no lending withdraw was needed.
     SwapReady {
+        step: ExecStep,
         amount_in: U256,
         withdraw_action_id: Option<String>,
     },
     /// Signed and persisted before broadcast. A crash here re-broadcasts the
     /// same bytes with the same nonce, so at most one transaction lands.
     Broadcasting {
+        step: ExecStep,
         amount_in: U256,
         signed_tx: String,
         tx_hash: String,
@@ -61,6 +63,7 @@ pub enum OrderState {
     },
     /// Broadcast, waiting for the receipt.
     Submitted {
+        step: ExecStep,
         amount_in: U256,
         tx_hash: String,
         withdraw_action_id: Option<String>,
@@ -92,7 +95,9 @@ pub enum OrderState {
 ///
 /// The venue, chain, and token pair are snapshotted at creation so editing or
 /// deleting the level later cannot change what this order already committed.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+///
+/// No `Eq`: the embedded plan carries a `serde_json::Value`.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Order {
     pub id: String,
     pub level_id: String,
@@ -102,6 +107,10 @@ pub struct Order {
     pub token_out: String,
     /// Base units of `token_in` this order committed, snapshotted at creation.
     pub reserved_amount: U256,
+    /// The execution plan decided when the order was created. A restarted
+    /// process rebuilds every transaction from it, so it has to survive the
+    /// round trip through storage.
+    pub plan: ExecutionPlan,
     pub state: OrderState,
     /// Swap attempts the order has burned. Inert until the retry transitions land.
     pub swap_attempts: u32,
@@ -112,8 +121,11 @@ pub struct Order {
 }
 
 impl Order {
-    /// Creates a fresh order from a fired level, ready for its swap to be signed.
-    pub fn new(id: String, level: &Level, created_at: i64) -> Self {
+    /// Creates a fresh order from a fired level, ready for its first step.
+    ///
+    /// Starts on [`ExecStep::Swap`]; the orchestrator re-derives the real step
+    /// sequence from the venue, which may prepend allowance transactions.
+    pub fn new(id: String, level: &Level, plan: ExecutionPlan, created_at: i64) -> Self {
         Self {
             id,
             level_id: level.id.clone(),
@@ -122,7 +134,9 @@ impl Order {
             token_in: level.token_in.clone(),
             token_out: level.token_out.clone(),
             reserved_amount: level.amount,
+            plan,
             state: OrderState::SwapReady {
+                step: ExecStep::Swap,
                 amount_in: level.amount,
                 withdraw_action_id: None,
             },

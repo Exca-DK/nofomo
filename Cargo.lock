@@ -4907,6 +4907,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "serde",
+ "serde_json",
  "tempo-agentic-domain",
 ]
 

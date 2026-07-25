@@ -18,10 +18,12 @@ CREATE TABLE IF NOT EXISTS levels (
     created_at        INTEGER NOT NULL
 );
 
--- One execution attempt per fired level. `state` holds the JSON-encoded
--- OrderState; `status` and `tx_hash` are denormalized query columns derived
--- from it at write time and never read back. Venue, chain, and the token pair
--- are snapshotted so editing the level cannot change what the order committed.
+-- One execution attempt per fired level. `plan` holds the JSON-encoded
+-- ExecutionPlan the orchestrator rebuilds every transaction from, so an order
+-- without one cannot be resumed. `state` holds the JSON-encoded OrderState;
+-- `status` and `tx_hash` are denormalized query columns derived from it at write
+-- time and never read back. Venue, chain, and the token pair are snapshotted so
+-- editing the level cannot change what the order committed.
 -- Note the two U256 encodings: `reserved_amount` is decimal, but amounts nested
 -- inside the `state` JSON are 0x-prefixed hex (how serde serializes U256).
 CREATE TABLE IF NOT EXISTS orders (
@@ -32,6 +34,7 @@ CREATE TABLE IF NOT EXISTS orders (
     token_in            TEXT    NOT NULL,
     token_out           TEXT    NOT NULL,
     reserved_amount     TEXT    NOT NULL,
+    plan                TEXT    NOT NULL,
     status              TEXT    NOT NULL CHECK (status IN (
                             'pending', 'submitted', 'filled', 'failed', 'quarantined'
                         )),
