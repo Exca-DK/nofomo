@@ -14,6 +14,10 @@ pub struct Config {
     pub quote_ttl_seconds: u64,
     #[serde(default = "default_max_slippage_bps")]
     pub max_slippage_bps: u16,
+    /// Base URL of the DexPaprika price stream. Token addresses and chains come
+    /// from `evm.chains`, so this is the only price setting.
+    #[serde(default = "default_dexpaprika_url")]
+    pub dexpaprika_stream_url: String,
     pub uniswap: UniswapConfig,
     pub graph: GraphConfig,
     pub evm: EvmConfig,
@@ -115,6 +119,7 @@ impl Config {
         }
         validate_https_url(&self.uniswap.api_url).context("Uniswap API URL")?;
         validate_https_url(&self.graph.gateway_url).context("The Graph Gateway URL")?;
+        validate_https_url(&self.dexpaprika_stream_url).context("DexPaprika stream URL")?;
         validate_env_name(&self.uniswap.api_key_env).context("Uniswap API key env name")?;
         validate_env_name(&self.graph.api_key_env).context("The Graph API key env name")?;
         validate_positive_decimal(&self.graph.min_pool_tvl_usd)
@@ -326,6 +331,10 @@ fn default_state_db_path() -> String {
     std::env::var("HOME")
         .map(|home| format!("{home}/.tempo-agentic/state.db"))
         .unwrap_or_else(|_| "/tmp/tempo-agentic.db".into())
+}
+
+fn default_dexpaprika_url() -> String {
+    "https://streaming.dexpaprika.com".into()
 }
 
 fn default_graph_url() -> String {
