@@ -37,6 +37,23 @@ enum Command {
         #[arg(long)]
         older_than_days: u32,
     },
+    /// Import an existing account by private key instead of generating a throwaway one.
+    ImportKey {
+        #[arg(long, value_enum)]
+        chain: ImportChain,
+        /// Raw private key (EVM: 0x-prefixed hex; Sui: base64 keypair string).
+        #[arg(long)]
+        private_key: String,
+        /// Overwrite an existing keystore/keypair for this chain.
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Clone, clap::ValueEnum)]
+enum ImportChain {
+    Evm,
+    Sui,
 }
 
 #[tokio::main]
@@ -71,6 +88,11 @@ async fn main() -> Result<()> {
             let deleted = store.prune(i64::try_from(cutoff)?).await?;
             println!("deleted quotes: {deleted}");
         }
+        Command::ImportKey {
+            chain,
+            private_key,
+            force,
+        } => import_key(&cli.config, chain, &private_key, force)?,
     }
     Ok(())
 }
@@ -110,9 +132,9 @@ fn bootstrap(config_path: &str) -> Result<()> {
         .unwrap_or(false)
     {
         let sui = SuiVault {
-            client_config: PathBuf::from(
-                str_at("/sui/client_config")
-                    .context("sui.client_config is required when sui.enabled is true")?,
+            keystore_path: PathBuf::from(
+                str_at("/sui/keystore_path")
+                    .context("sui.keystore_path is required when sui.enabled is true")?,
             ),
             alias: SUI_DEV_ALIAS.to_string(),
         };
@@ -127,6 +149,43 @@ fn bootstrap(config_path: &str) -> Result<()> {
             .with_context(|| format!("cannot create {}", parent.display()))?;
     }
     println!("bootstrap: ok");
+    Ok(())
+}
+
+// Reads raw JSON instead of Config::load because validation fails before keystore files exist.
+fn import_key(config_path: &str, chain: ImportChain, private_key: &str, force: bool) -> Result<()> {
+    let raw = fs::read_to_string(config_path)
+        .with_context(|| format!("cannot read config {config_path}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&raw).with_context(|| format!("invalid JSON in {config_path}"))?;
+
+    let str_at = |pointer: &str| value.pointer(pointer).and_then(|v| v.as_str());
+
+    match chain {
+        ImportChain::Evm => {
+            let evm = EvmVault {
+                keystore_path: PathBuf::from(
+                    str_at("/evm/keystore_path").context("evm.keystore_path is required")?,
+                ),
+                password_file: PathBuf::from(
+                    str_at("/evm/password_file").context("evm.password_file is required")?,
+                ),
+            };
+            let address = evm.import_key(private_key, force)?;
+            println!("evm: {address}");
+        }
+        ImportChain::Sui => {
+            let sui = SuiVault {
+                keystore_path: PathBuf::from(
+                    str_at("/sui/keystore_path").context("sui.keystore_path is required")?,
+                ),
+                alias: SUI_DEV_ALIAS.to_string(),
+            };
+            let address = sui.import_key(private_key, force)?;
+            println!("sui: {address}");
+        }
+    }
+
     Ok(())
 }
 
