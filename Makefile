@@ -13,7 +13,7 @@ endef
 # something nobody ships.
 export DATABASE_URL = sqlite://$(SQLX_DEV_DB)
 
-.PHONY: schema check build bootstrap run health prepare docker-build docker-run help
+.PHONY: schema check build bootstrap run health integrate prepare docker-build docker-run help
 
 schema:
 	rm -f $(SQLX_DEV_DB)
@@ -39,7 +39,7 @@ check: schema
 	cargo test --workspace
 	cargo clippy --workspace --all-targets -- -D warnings
 
-build:
+build: schema
 	cargo build --workspace --release
 
 bootstrap: build
@@ -50,6 +50,9 @@ run: build bootstrap
 
 health: build bootstrap
 	$(load_env) ./target/release/tempo-agentic-admin health
+
+integrate: build
+	$(load_env) ./target/release/tempo-agentic-admin integrate-openclaw
 
 help:
 	@grep -E '^[a-zA-Z0-9_-]+:' Makefile \
