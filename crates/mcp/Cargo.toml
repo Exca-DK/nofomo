@@ -1,0 +1,15 @@
+[package]
+name = "tempo-agentic-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+rmcp.workspace = true
+tempo-agentic-agent.workspace = true
+tempo-agentic-domain.workspace = true
+
+[lints]
+workspace = true
