@@ -342,3 +342,30 @@ fn the_backoff_doubles_and_then_holds() {
 fn a_zero_attempt_count_still_pauses() {
     assert_eq!(swap_retry_backoff_secs(0), 2);
 }
+
+// Nothing left the process, so there is no hash and nothing to retry — a resend
+// would be refused the same way. `Failed` frees the level to try the whole path
+// again after its rest.
+#[test]
+fn a_blocked_broadcast_ends_the_order_without_a_hash() {
+    assert_eq!(
+        apply(&order(broadcasting()), Outcome::BroadcastBlocked)
+            .unwrap()
+            .unwrap(),
+        OrderState::Failed {
+            tx_hash: None,
+            reason: "broadcast blocked; set MAINNET_SWAP=1 to allow".into(),
+        }
+    );
+}
+
+#[test]
+fn blocking_something_that_was_not_being_sent_is_rejected() {
+    let error = apply(
+        &order(swap_ready(ExecStep::Swap)),
+        Outcome::BroadcastBlocked,
+    )
+    .unwrap_err();
+    assert_eq!(error.state, "SwapReady");
+    assert_eq!(error.outcome, "BroadcastBlocked");
+}

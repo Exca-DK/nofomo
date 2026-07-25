@@ -3,6 +3,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use tempo_agentic_strategy::{Order, OrderState, OrderStore};
+use tokio::sync::Notify;
 
 use crate::io::{ExecDeps, perform};
 use crate::machine::{Action, Outcome, apply, next_action, swap_retry_backoff_secs};
@@ -14,12 +15,19 @@ const MAX_TRANSITIONS_PER_PASS: usize = 12;
 /// Wakes the execution loop.
 #[derive(Default)]
 pub struct Waker {
-    notify: tokio::sync::Notify,
+    notify: Arc<Notify>,
 }
 
 impl Waker {
     pub fn wake(&self) {
         self.notify.notify_one();
+    }
+
+    /// The waking half on its own, for a producer that should not be able to
+    /// wait. The trigger takes this: it creates work and says so, but the loop
+    /// that consumes the work is the only one allowed to sleep on it.
+    pub fn notifier(&self) -> Arc<Notify> {
+        self.notify.clone()
     }
 
     /// Waits until woken or the timeout expires. One permit is cached, so waking

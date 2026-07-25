@@ -12,6 +12,10 @@ pub struct ExecDeps {
     pub venues: Vec<Arc<dyn TradeVenue>>,
     pub chains: HashMap<u64, Arc<dyn ChainClient>>,
     pub signer: Arc<dyn Signer>,
+    /// Whether signed transactions may actually be sent. Off means every other
+    /// step still runs, so a blocked process exercises the whole path but spends
+    /// nothing.
+    pub allow_broadcast: bool,
 }
 
 impl ExecDeps {
@@ -42,6 +46,14 @@ pub async fn perform(deps: &ExecDeps, order: &Order, action: Action) -> Outcome 
             Ok(outcome) => outcome,
             Err(error) => failed(error),
         },
+        Action::Broadcast { signed } if !deps.allow_broadcast => {
+            tracing::warn!(
+                order = %order.id,
+                tx_hash = %signed.hash,
+                "broadcast blocked; the transaction is signed but stays here"
+            );
+            Outcome::BroadcastBlocked
+        }
         Action::Broadcast { signed } => match deps.chain(&order.plan) {
             Err(error) => failed(error),
             Ok(chain) => match chain.broadcast(&signed).await {

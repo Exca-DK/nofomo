@@ -4,12 +4,14 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use alloy_primitives::U256;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use tempo_agentic_config::Config;
+use tempo_agentic_config::{Config, EvmChain, EvmToken};
+use tempo_agentic_domain::parse_units_string;
 use tempo_agentic_orchestrator::{Outcome, apply};
-use tempo_agentic_storage::{SqliteAuditStore, SqliteOrderStore};
-use tempo_agentic_strategy::OrderStore;
+use tempo_agentic_storage::{SqliteAuditStore, SqliteLevelStore, SqliteOrderStore};
+use tempo_agentic_strategy::{Level, LevelStore, OrderStore};
 use tempo_agentic_vault::{ChainVault, EvmVault, SuiVault};
 
 #[derive(Parser)]
@@ -44,6 +46,11 @@ enum Command {
         #[arg(long)]
         order_id: String,
     },
+    /// Manage the standing rules the daemon watches prices against.
+    Level {
+        #[command(subcommand)]
+        action: LevelCommand,
+    },
     /// Import an existing account by private key instead of generating a throwaway one.
     ImportKey {
         #[arg(long, value_enum)]
@@ -61,6 +68,41 @@ enum Command {
 enum ImportChain {
     Evm,
     Sui,
+}
+
+#[derive(Subcommand)]
+enum LevelCommand {
+    /// Store a rule after checking it against the configuration.
+    Add(AddLevel),
+    List,
+    Rm {
+        #[arg(long)]
+        id: String,
+    },
+}
+
+#[derive(clap::Args)]
+struct AddLevel {
+    #[arg(long)]
+    id: String,
+    #[arg(long, default_value = "uniswap")]
+    venue: String,
+    #[arg(long)]
+    chain: String,
+    #[arg(long)]
+    token_in: String,
+    #[arg(long)]
+    token_out: String,
+    /// `buy` watches the price of token_out, `sell` the price of token_in.
+    #[arg(long)]
+    side: String,
+    #[arg(long)]
+    trigger_price_usd: f64,
+    /// How much token_in to spend, in whole units rather than base units.
+    #[arg(long)]
+    amount: String,
+    #[arg(long)]
+    slippage_bps: u16,
 }
 
 #[tokio::main]
@@ -99,6 +141,15 @@ async fn main() -> Result<()> {
             let (_, store) = load(&cli.config).await?;
             resolve_quarantine(&SqliteOrderStore::new(store.pool().clone()), &order_id).await?;
         }
+        Command::Level { action } => {
+            let (config, store) = load(&cli.config).await?;
+            level_command(
+                &config,
+                &SqliteLevelStore::new(store.pool().clone()),
+                action,
+            )
+            .await?;
+        }
         Command::ImportKey {
             chain,
             private_key,
@@ -106,6 +157,84 @@ async fn main() -> Result<()> {
         } => import_key(&cli.config, chain, &private_key, force)?,
     }
     Ok(())
+}
+
+async fn level_command(
+    config: &Config,
+    levels: &SqliteLevelStore,
+    action: LevelCommand,
+) -> Result<()> {
+    match action {
+        LevelCommand::Add(args) => {
+            let level = build_level(config, &args)?;
+            levels.upsert_level(&level).await?;
+            println!("level {}: stored", level.id);
+        }
+        LevelCommand::List => {
+            for level in levels.list_levels().await? {
+                println!(
+                    "{}  {} {} {} {} -> {} at {} USD, {} base units, {} bps",
+                    level.id,
+                    level.venue.as_str(),
+                    level.chain,
+                    level.side.as_str(),
+                    level.token_in,
+                    level.token_out,
+                    level.trigger_price_usd,
+                    level.amount,
+                    level.slippage_bps,
+                );
+            }
+        }
+        LevelCommand::Rm { id } => {
+            levels.delete_level(&id).await?;
+            println!("level {id}: deleted");
+        }
+    }
+    Ok(())
+}
+
+// Everything is checked against the configuration before it is stored. A rule
+// naming a chain or a token the daemon does not know would be saved happily and
+// then never fire, because nothing could price it.
+fn build_level(config: &Config, args: &AddLevel) -> Result<Level> {
+    let chain = config
+        .evm
+        .chains
+        .iter()
+        .find(|chain| chain.name.eq_ignore_ascii_case(&args.chain))
+        .with_context(|| format!("EVM chain {} is not configured", args.chain))?;
+    let input = find_token(chain, &args.token_in)
+        .with_context(|| format!("{} does not configure {}", chain.name, args.token_in))?;
+    find_token(chain, &args.token_out)
+        .with_context(|| format!("{} does not configure {}", chain.name, args.token_out))?;
+    if args.slippage_bps > config.max_slippage_bps {
+        bail!(
+            "slippage_bps must not exceed the configured maximum {}",
+            config.max_slippage_bps
+        );
+    }
+    let amount = parse_units_string(&args.amount, input.decimals)?;
+    Ok(Level {
+        id: args.id.clone(),
+        venue: args.venue.parse()?,
+        chain: chain.name.clone(),
+        token_in: args.token_in.to_ascii_uppercase(),
+        token_out: args.token_out.to_ascii_uppercase(),
+        side: args.side.parse()?,
+        trigger_price_usd: args.trigger_price_usd,
+        amount: U256::from_str_radix(&amount, 10).context("amount does not fit in 256 bits")?,
+        amount_decimals: input.decimals,
+        slippage_bps: args.slippage_bps,
+    })
+}
+
+fn find_token<'a>(chain: &'a EvmChain, symbol: &str) -> Option<&'a EvmToken> {
+    chain
+        .tokens
+        .iter()
+        .find(|(configured, _)| configured.eq_ignore_ascii_case(symbol))
+        .map(|(_, token)| token)
 }
 
 // Sends a parked order back to `failed`, the one status that leaves its level

@@ -37,6 +37,8 @@ pub enum Outcome {
     /// An operator released a quarantined order by hand. The only outcome no
     /// execution ever produces.
     QuarantineResolved,
+    /// The transaction was ready but sending it is not allowed.
+    BroadcastBlocked,
 }
 
 /// Broadcast attempts an order may burn before it is parked. The count is raised
@@ -186,6 +188,14 @@ pub fn apply(order: &Order, outcome: Outcome) -> Result<Option<OrderState>, Tran
             reason: "reverted on-chain".to_string(),
         },
 
+        // Nothing left the process, so there is no hash and nothing to retry:
+        // resending would be blocked just the same. Ending here frees the level,
+        // which then rests and tries the whole path again a minute later.
+        (S::Broadcasting { .. }, O::BroadcastBlocked) => S::Failed {
+            tx_hash: None,
+            reason: "broadcast blocked; set MAINNET_SWAP=1 to allow".to_string(),
+        },
+
         // The one transition a person makes by hand. `Failed` is the landing
         // because it is the only status that leaves the level free to fire again.
         (S::SwapQuarantined { tx_hash, .. }, O::QuarantineResolved) => S::Failed {
@@ -226,5 +236,6 @@ fn outcome_name(outcome: &Outcome) -> &'static str {
         Outcome::Reverted => "Reverted",
         Outcome::ExecFailed { .. } => "ExecFailed",
         Outcome::QuarantineResolved => "QuarantineResolved",
+        Outcome::BroadcastBlocked => "BroadcastBlocked",
     }
 }
