@@ -361,6 +361,9 @@ pub async fn connect_pool(path: &Path) -> Result<SqlitePool> {
         .connect_with(options)
         .await
         .context("cannot open SQLite state")?;
+    // Every migration is idempotent, so they can all be replayed on each open.
+    // Keep them that way: a statement without an `IF NOT EXISTS` form, such as
+    // `ALTER TABLE ... ADD COLUMN`, would fail here on the second open.
     for migration in [
         include_str!("../migrations/0001_audit.sql"),
         include_str!("../migrations/0002_strategy.sql"),

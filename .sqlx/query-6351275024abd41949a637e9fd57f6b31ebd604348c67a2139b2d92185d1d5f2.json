@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, level_id, venue, chain, token_in, token_out, reserved_amount, state, swap_attempts, swap_retry_after_ts, created_at FROM orders WHERE id = ?",
+  "query": "SELECT id, level_id, venue, chain, token_in, token_out, reserved_amount, plan, state, swap_attempts, swap_retry_after_ts, created_at FROM orders WHERE id = ?",
   "describe": {
     "columns": [
       {
@@ -39,23 +39,28 @@
         "type_info": "Text"
       },
       {
-        "name": "state",
+        "name": "plan",
         "ordinal": 7,
         "type_info": "Text"
       },
       {
-        "name": "swap_attempts",
+        "name": "state",
         "ordinal": 8,
-        "type_info": "Integer"
+        "type_info": "Text"
       },
       {
-        "name": "swap_retry_after_ts",
+        "name": "swap_attempts",
         "ordinal": 9,
         "type_info": "Integer"
       },
       {
-        "name": "created_at",
+        "name": "swap_retry_after_ts",
         "ordinal": 10,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 11,
         "type_info": "Integer"
       }
     ],
@@ -72,9 +77,10 @@
       false,
       false,
       false,
+      false,
       true,
       false
     ]
   },
-  "hash": "665c945d13346b8fc219a6fe25e12495428f0b16dd345bd6089e7c86ebd96671"
+  "hash": "6351275024abd41949a637e9fd57f6b31ebd604348c67a2139b2d92185d1d5f2"
 }

@@ -60,6 +60,7 @@ impl AgentService {
         let venues: Vec<Arc<dyn TradeVenue>> = vec![Arc::new(UniswapVenue::new(
             &config.uniswap,
             &config.evm,
+            signer.address().to_string(),
             chains.clone(),
             graph.clone(),
             config.max_slippage_bps,

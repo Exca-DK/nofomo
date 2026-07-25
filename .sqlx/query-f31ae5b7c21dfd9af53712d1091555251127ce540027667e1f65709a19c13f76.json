@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO orders( id, level_id, venue, chain, token_in, token_out, reserved_amount, status, tx_hash, plan, state, swap_attempts, swap_retry_after_ts, created_at ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET level_id = excluded.level_id, venue = excluded.venue, chain = excluded.chain, token_in = excluded.token_in, token_out = excluded.token_out, reserved_amount = excluded.reserved_amount, status = excluded.status, tx_hash = excluded.tx_hash, plan = excluded.plan, state = excluded.state, swap_attempts = excluded.swap_attempts, swap_retry_after_ts = excluded.swap_retry_after_ts",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 14
+    },
+    "nullable": []
+  },
+  "hash": "f31ae5b7c21dfd9af53712d1091555251127ce540027667e1f65709a19c13f76"
+}

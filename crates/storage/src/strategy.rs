@@ -2,6 +2,7 @@ use alloy_primitives::U256;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use sqlx::SqlitePool;
+use tempo_agentic_domain::ExecutionPlan;
 use tempo_agentic_strategy::{Level, LevelStore, Order, OrderState, OrderStore};
 
 /// SQLite storage for the standing rules the daemon evaluates.
@@ -75,6 +76,7 @@ struct OrderRow {
     token_in: String,
     token_out: String,
     reserved_amount: String,
+    plan: String,
     state: String,
     swap_attempts: i64,
     swap_retry_after_ts: Option<i64>,
@@ -94,6 +96,8 @@ impl OrderRow {
             token_in: self.token_in,
             token_out: self.token_out,
             reserved_amount: parse_u256(&self.reserved_amount, "reserved_amount", &id)?,
+            plan: serde_json::from_str::<ExecutionPlan>(&self.plan)
+                .with_context(|| format!("order {id} has an unusable plan"))?,
             state: serde_json::from_str::<OrderState>(&self.state)
                 .with_context(|| format!("order {id} has an unusable state"))?,
             swap_attempts: u32::try_from(self.swap_attempts)
@@ -200,13 +204,14 @@ impl OrderStore for SqliteOrderStore {
         // state JSON just to filter.
         let status = order.status().as_str();
         let tx_hash = order.tx_hash();
+        let plan = serde_json::to_string(&order.plan).context("cannot serialize order plan")?;
         let state = serde_json::to_string(&order.state).context("cannot serialize order state")?;
         let swap_attempts = i64::from(order.swap_attempts);
         sqlx::query!(
             "INSERT INTO orders( \
                  id, level_id, venue, chain, token_in, token_out, reserved_amount, \
-                 status, tx_hash, state, swap_attempts, swap_retry_after_ts, created_at \
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 status, tx_hash, plan, state, swap_attempts, swap_retry_after_ts, created_at \
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET \
                  level_id = excluded.level_id, \
                  venue = excluded.venue, \
@@ -216,6 +221,7 @@ impl OrderStore for SqliteOrderStore {
                  reserved_amount = excluded.reserved_amount, \
                  status = excluded.status, \
                  tx_hash = excluded.tx_hash, \
+                 plan = excluded.plan, \
                  state = excluded.state, \
                  swap_attempts = excluded.swap_attempts, \
                  swap_retry_after_ts = excluded.swap_retry_after_ts",
@@ -228,6 +234,7 @@ impl OrderStore for SqliteOrderStore {
             reserved_amount,
             status,
             tx_hash,
+            plan,
             state,
             swap_attempts,
             order.swap_retry_after_ts,
@@ -243,7 +250,7 @@ impl OrderStore for SqliteOrderStore {
         sqlx::query_as!(
             OrderRow,
             "SELECT id, level_id, venue, chain, token_in, token_out, reserved_amount, \
-                    state, swap_attempts, swap_retry_after_ts, created_at \
+                    plan, state, swap_attempts, swap_retry_after_ts, created_at \
              FROM orders WHERE id = ?",
             id
         )
@@ -258,7 +265,7 @@ impl OrderStore for SqliteOrderStore {
         sqlx::query_as!(
             OrderRow,
             "SELECT id, level_id, venue, chain, token_in, token_out, reserved_amount, \
-                    state, swap_attempts, swap_retry_after_ts, created_at \
+                    plan, state, swap_attempts, swap_retry_after_ts, created_at \
              FROM orders ORDER BY created_at, id"
         )
         .fetch_all(&self.pool)

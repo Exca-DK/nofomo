@@ -131,13 +131,13 @@ pub struct QuoteDraft {
 }
 
 // Deserialize is required so a stored plan can be replayed after a restart:
-// execution now spans several persisted steps.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+// execution now spans several persisted steps. No `Eq`, because the embedded
+// venue quote is a `serde_json::Value`.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum ExecutionPlan {
     Uniswap {
         chain_name: String,
         chain_id: u64,
-        rpc_url: String,
         input_token: String,
         input_amount: String,
         quote: Value,
