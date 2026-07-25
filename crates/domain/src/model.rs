@@ -117,7 +117,7 @@ pub struct TransactionReference {
     pub id: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct QuoteDraft {
     pub venue: String,
     pub chain: String,
@@ -130,7 +130,9 @@ pub struct QuoteDraft {
     pub plan: ExecutionPlan,
 }
 
-#[derive(Clone, Debug, Serialize)]
+// Deserialize is required so a stored plan can be replayed after a restart:
+// execution now spans several persisted steps.
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum ExecutionPlan {
     Uniswap {
         chain_name: String,
