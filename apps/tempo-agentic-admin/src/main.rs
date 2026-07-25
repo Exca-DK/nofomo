@@ -4,14 +4,13 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use alloy_primitives::U256;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use tempo_agentic_config::{Config, EvmChain, EvmToken};
-use tempo_agentic_domain::parse_units_string;
+use tempo_agentic_config::Config;
 use tempo_agentic_orchestrator::{Outcome, apply};
 use tempo_agentic_storage::{SqliteAuditStore, SqliteLevelStore, SqliteOrderStore};
-use tempo_agentic_strategy::{Level, LevelStore, OrderStore};
+use tempo_agentic_strategy::{LevelStore, OrderStore};
+use tempo_agentic_trigger::{LevelDraft, validate_level};
 use tempo_agentic_vault::{ChainVault, EvmVault, SuiVault};
 
 #[derive(Parser)]
@@ -105,6 +104,22 @@ struct AddLevel {
     slippage_bps: u16,
 }
 
+impl From<AddLevel> for LevelDraft {
+    fn from(args: AddLevel) -> Self {
+        Self {
+            id: args.id,
+            venue: args.venue,
+            chain: args.chain,
+            token_in: args.token_in,
+            token_out: args.token_out,
+            side: args.side,
+            trigger_price_usd: args.trigger_price_usd,
+            amount: args.amount,
+            slippage_bps: args.slippage_bps,
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -166,7 +181,7 @@ async fn level_command(
 ) -> Result<()> {
     match action {
         LevelCommand::Add(args) => {
-            let level = build_level(config, &args)?;
+            let level = validate_level(&config.evm, config.max_slippage_bps, &args.into())?;
             levels.upsert_level(&level).await?;
             println!("level {}: stored", level.id);
         }
@@ -192,49 +207,6 @@ async fn level_command(
         }
     }
     Ok(())
-}
-
-// Everything is checked against the configuration before it is stored. A rule
-// naming a chain or a token the daemon does not know would be saved happily and
-// then never fire, because nothing could price it.
-fn build_level(config: &Config, args: &AddLevel) -> Result<Level> {
-    let chain = config
-        .evm
-        .chains
-        .iter()
-        .find(|chain| chain.name.eq_ignore_ascii_case(&args.chain))
-        .with_context(|| format!("EVM chain {} is not configured", args.chain))?;
-    let input = find_token(chain, &args.token_in)
-        .with_context(|| format!("{} does not configure {}", chain.name, args.token_in))?;
-    find_token(chain, &args.token_out)
-        .with_context(|| format!("{} does not configure {}", chain.name, args.token_out))?;
-    if args.slippage_bps > config.max_slippage_bps {
-        bail!(
-            "slippage_bps must not exceed the configured maximum {}",
-            config.max_slippage_bps
-        );
-    }
-    let amount = parse_units_string(&args.amount, input.decimals)?;
-    Ok(Level {
-        id: args.id.clone(),
-        venue: args.venue.parse()?,
-        chain: chain.name.clone(),
-        token_in: args.token_in.to_ascii_uppercase(),
-        token_out: args.token_out.to_ascii_uppercase(),
-        side: args.side.parse()?,
-        trigger_price_usd: args.trigger_price_usd,
-        amount: U256::from_str_radix(&amount, 10).context("amount does not fit in 256 bits")?,
-        amount_decimals: input.decimals,
-        slippage_bps: args.slippage_bps,
-    })
-}
-
-fn find_token<'a>(chain: &'a EvmChain, symbol: &str) -> Option<&'a EvmToken> {
-    chain
-        .tokens
-        .iter()
-        .find(|(configured, _)| configured.eq_ignore_ascii_case(symbol))
-        .map(|(_, token)| token)
 }
 
 // Sends a parked order back to `failed`, the one status that leaves its level

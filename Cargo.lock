@@ -2088,7 +2088,7 @@ dependencies = [
  "sha2",
  "sha3 0.10.9",
  "thiserror 1.0.69",
- "uuid",
+ "uuid 0.8.2",
 ]
 
 [[package]]
@@ -2571,6 +2571,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "httpdate"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2593,6 +2599,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -3925,18 +3932,27 @@ checksum = "14db48ee17a9ba61810ab1a9c1beb7d06d8136ae39ac25a1137f10d357af01af"
 dependencies = [
  "async-trait",
  "base64",
+ "bytes",
  "chrono",
  "futures",
+ "http",
+ "http-body",
+ "http-body-util",
  "pastey",
  "pin-project-lite",
+ "rand 0.10.2",
  "rmcp-macros",
  "schemars 1.2.1",
  "serde",
  "serde_json",
+ "sse-stream",
  "thiserror 2.0.19",
  "tokio",
+ "tokio-stream",
  "tokio-util",
+ "tower-service",
  "tracing",
+ "uuid 1.24.0",
 ]
 
 [[package]]
@@ -4674,6 +4690,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sse-stream"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c123f296ade4ec4b8b0f6162116e6629f5146922ca5ab40ca9d3c2e73ab4761e"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "http-body",
+ "http-body-util",
+ "pin-project-lite",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4885,15 +4914,14 @@ dependencies = [
 name = "tempo-agentic-admin"
 version = "0.2.0"
 dependencies = [
- "alloy-primitives",
  "anyhow",
  "clap",
  "serde_json",
  "tempo-agentic-config",
- "tempo-agentic-domain",
  "tempo-agentic-orchestrator",
  "tempo-agentic-storage",
  "tempo-agentic-strategy",
+ "tempo-agentic-trigger",
  "tempo-agentic-vault",
  "tokio",
 ]
@@ -4962,11 +4990,18 @@ dependencies = [
  "anyhow",
  "clap",
  "futures",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "rand 0.8.7",
  "reqwest 0.12.28",
+ "rmcp",
+ "serde_json",
  "tempo-agentic-chain",
  "tempo-agentic-config",
  "tempo-agentic-domain",
  "tempo-agentic-graph",
+ "tempo-agentic-mcp",
  "tempo-agentic-orchestrator",
  "tempo-agentic-price",
  "tempo-agentic-price-dexpaprika",
@@ -5009,8 +5044,13 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "rmcp",
+ "schemars 1.2.1",
+ "serde",
  "tempo-agentic-agent",
+ "tempo-agentic-config",
  "tempo-agentic-domain",
+ "tempo-agentic-strategy",
+ "tempo-agentic-trigger",
 ]
 
 [[package]]
@@ -5087,6 +5127,8 @@ dependencies = [
  "alloy-primitives",
  "anyhow",
  "async-trait",
+ "schemars 1.2.1",
+ "serde",
  "serde_json",
  "tempo-agentic-config",
  "tempo-agentic-domain",
@@ -5632,6 +5674,17 @@ checksum = "bc5cf98d8186244414c848017f0e2676b3fcb46807f6668a97dfe67359a3c4b7"
 dependencies = [
  "getrandom 0.2.17",
  "serde",
+]
+
+[[package]]
+name = "uuid"
+version = "1.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf3923a6f5c4c6382e0b653c4117f48d631ea17f38ed86e2a828e6f7412f5239"
+dependencies = [
+ "getrandom 0.4.3",
+ "js-sys",
+ "wasm-bindgen",
 ]
 
 [[package]]
