@@ -37,6 +37,9 @@ impl std::str::FromStr for Side {
 
 /// A standing rule: swap `token_in` for `token_out` once the priced asset
 /// crosses `trigger_price_usd`.
+///
+/// Carries no execution state of its own. Whether it has already fired is read
+/// from its orders, so the two can never disagree.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Level {
     pub id: String,
