@@ -24,6 +24,7 @@ pub struct UniswapVenue {
     api_url: String,
     api_key: String,
     evm: EvmConfig,
+    wallet_address: String,
     graph: GraphClient,
     max_slippage_bps: u16,
 }
@@ -43,11 +44,13 @@ impl UniswapVenue {
         graph: GraphClient,
         max_slippage_bps: u16,
     ) -> Result<Self> {
+        let wallet_address = derive_wallet_address(evm)?;
         Ok(Self {
             http: Client::new(),
             api_url: config.api_url.trim_end_matches('/').to_string(),
             api_key: secret_from_env(&config.api_key_env)?,
             evm: evm.clone(),
+            wallet_address,
             graph,
             max_slippage_bps,
         })
@@ -61,7 +64,7 @@ impl UniswapVenue {
         let amount = tempo_agentic_domain::parse_units_string(&request.amount, input.decimals)?;
 
         let balance = self
-            .balance(chain, &input.address, &self.evm.wallet_address)
+            .balance(chain, &input.address, &self.wallet_address)
             .await?;
         if !hex_is_at_least(&balance, &amount)? {
             bail!(
@@ -90,7 +93,7 @@ impl UniswapVenue {
                     "tokenOutChainId": chain.chain_id,
                     "tokenIn": input.address,
                     "tokenOut": output.address,
-                    "swapper": self.evm.wallet_address,
+                    "swapper": self.wallet_address,
                     "slippageTolerance": slippage_percent_json(request.slippage_bps)?,
                     "routingPreference": "BEST_PRICE",
                     "protocols": ["V2", "V3", "V4"]
@@ -113,7 +116,7 @@ impl UniswapVenue {
         validate_quote(
             &quote,
             chain.chain_id,
-            &self.evm.wallet_address,
+            &self.wallet_address,
             &input.address,
             &output.address,
             &amount,
@@ -237,7 +240,7 @@ impl UniswapVenue {
     ) -> Result<String> {
         validate_transaction(
             transaction,
-            &self.evm.wallet_address,
+            &self.wallet_address,
             chain_id,
             expected_to,
             expected_value,
@@ -366,7 +369,7 @@ impl TradeVenue for UniswapVenue {
                 .api_post(
                     "check_approval",
                     &json!({
-                        "walletAddress": self.evm.wallet_address,
+                        "walletAddress": self.wallet_address,
                         "token": input_token,
                         "amount": input_amount,
                         "chainId": chain_id
@@ -422,6 +425,15 @@ impl TradeVenue for UniswapVenue {
             transactions,
         })
     }
+}
+
+fn derive_wallet_address(evm: &EvmConfig) -> Result<String> {
+    let password = std::fs::read_to_string(&evm.password_file)
+        .with_context(|| format!("cannot read password file {}", evm.password_file))?;
+    let key = eth_keystore::decrypt_key(&evm.keystore_path, password.trim())
+        .with_context(|| format!("cannot decrypt keystore {}", evm.keystore_path))?;
+    let signer = PrivateKeySigner::from_slice(&key).context("invalid private key in keystore")?;
+    Ok(signer.address().to_string())
 }
 
 fn find_token<'a>(chain: &'a EvmChain, symbol: &str) -> Option<&'a EvmToken> {

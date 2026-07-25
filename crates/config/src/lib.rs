@@ -41,7 +41,6 @@ pub struct GraphConfig {
 /// Configuration for EVM node connections and wallet credentials.
 #[derive(Clone, Debug, Deserialize)]
 pub struct EvmConfig {
-    pub wallet_address: String,
     pub keystore_path: String,
     pub password_file: String,
     pub chains: Vec<EvmChain>,
@@ -69,8 +68,7 @@ pub struct EvmToken {
 pub struct SuiConfig {
     pub enabled: bool,
     pub rpc_url: String,
-    pub client_config: Option<String>,
-    pub owner: String,
+    pub keystore_path: Option<String>,
     pub pool_id: String,
     pub deepbook_package_id: String,
     pub base: SuiToken,
@@ -124,7 +122,6 @@ impl Config {
         if self.evm.chains.is_empty() {
             bail!("configure at least one EVM chain");
         }
-        validate_hex_address(&self.evm.wallet_address).context("EVM wallet address")?;
         validate_secret_files(&self.evm.keystore_path, &self.evm.password_file)?;
         let mut chain_ids = HashSet::new();
         for chain in &self.evm.chains {
@@ -162,15 +159,14 @@ impl Config {
             }
         }
         if self.sui.enabled {
-            if let Some(client_config) = &self.sui.client_config {
-                let path = Path::new(client_config);
+            if let Some(keystore_path) = &self.sui.keystore_path {
+                let path = Path::new(keystore_path);
                 if !path.is_absolute() || !path.is_file() {
-                    bail!("sui.client_config must be an existing absolute file");
+                    bail!("sui.keystore_path must be an existing absolute file");
                 }
             }
             validate_http_url(&self.sui.rpc_url).context("Sui RPC URL")?;
             for (name, value) in [
-                ("Sui owner", self.sui.owner.as_str()),
                 ("DeepBook pool ID", self.sui.pool_id.as_str()),
                 ("DeepBook package ID", self.sui.deepbook_package_id.as_str()),
                 ("Sui clock ID", self.sui.clock_id.as_str()),
