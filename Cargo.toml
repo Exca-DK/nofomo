@@ -17,7 +17,10 @@ tempo-agentic-graph = { path = "crates/graph" }
     tempo-agentic-agent = { path = "crates/agent" }
 tempo-agentic-mcp = { path = "crates/mcp" }
 tempo-agentic-vault = { path = "crates/vault" }
+tempo-agentic-strategy = { path = "crates/strategy" }
+tempo-agentic-chain = { path = "crates/chain" }
 
+alloy-primitives = { version = "1.6", features = ["serde"] }
 anyhow = "1"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive", "env"] }
@@ -27,7 +30,7 @@ schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+sqlx = { version = "0.8", default-features = false, features = ["macros", "runtime-tokio", "sqlite"] }
 tokio = { version = "1", features = ["io-std", "macros", "process", "rt-multi-thread", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

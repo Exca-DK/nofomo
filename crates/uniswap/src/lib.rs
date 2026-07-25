@@ -1,30 +1,30 @@
 use std::cmp::Ordering;
+use std::collections::HashMap;
+use std::sync::Arc;
 
-use alloy::network::{EthereumWallet, TransactionBuilder};
-use alloy::primitives::{Address, Bytes, U256};
-use alloy::providers::{Provider, ProviderBuilder};
-use alloy::rpc::types::TransactionRequest;
-use alloy::signers::local::PrivateKeySigner;
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{Value, json};
-use std::str::FromStr;
 
 use tempo_agentic_config::{EvmChain, EvmConfig, EvmToken, UniswapConfig, secret_from_env};
 use tempo_agentic_domain::{
-    ExecutionPlan, QuoteDraft, QuoteTradeRequest, TradeVenue, TransactionReference, VenueExecution,
+    ChainClient, ExecStep, ExecutionPlan, QuoteDraft, QuoteTradeRequest, TradeVenue, TxContext,
+    UnsignedTx, is_native_token,
 };
 use tempo_agentic_graph::GraphClient;
 
-/// EVM swap venue executing trades via the Uniswap API and a local wallet.
+/// EVM swap venue that quotes and builds transactions via the Uniswap API.
+///
+/// It never signs or broadcasts: node access goes through [`ChainClient`] and
+/// signing through [`tempo_agentic_domain::Signer`].
 #[derive(Clone)]
 pub struct UniswapVenue {
     http: Client,
     api_url: String,
     api_key: String,
     evm: EvmConfig,
-    wallet_address: String,
+    chains: HashMap<u64, Arc<dyn ChainClient>>,
     graph: GraphClient,
     max_slippage_bps: u16,
 }
@@ -41,6 +41,7 @@ impl UniswapVenue {
     pub fn new(
         config: &UniswapConfig,
         evm: &EvmConfig,
+        chains: HashMap<u64, Arc<dyn ChainClient>>,
         graph: GraphClient,
         max_slippage_bps: u16,
     ) -> Result<Self> {
@@ -50,10 +51,36 @@ impl UniswapVenue {
             api_url: config.api_url.trim_end_matches('/').to_string(),
             api_key: secret_from_env(&config.api_key_env)?,
             evm: evm.clone(),
-            wallet_address,
+            chains,
             graph,
             max_slippage_bps,
         })
+    }
+
+    fn chain_client(&self, chain_id: u64) -> Result<&Arc<dyn ChainClient>> {
+        self.chains
+            .get(&chain_id)
+            .with_context(|| format!("no chain client configured for chain {chain_id}"))
+    }
+
+    /// Fetches the `check_approval` response, which carries the optional cancel
+    /// and approval transactions for an ERC-20 input.
+    async fn check_approval(
+        &self,
+        chain_id: u64,
+        input_token: &str,
+        input_amount: &str,
+    ) -> Result<Value> {
+        self.api_post(
+            "check_approval",
+            &json!({
+                "walletAddress": self.evm.wallet_address,
+                "token": input_token,
+                "amount": input_amount,
+                "chainId": chain_id
+            }),
+        )
+        .await
     }
 
     async fn candidate(&self, request: &QuoteTradeRequest, chain: &EvmChain) -> Result<Candidate> {
@@ -64,9 +91,10 @@ impl UniswapVenue {
         let amount = tempo_agentic_domain::parse_units_string(&request.amount, input.decimals)?;
 
         let balance = self
-            .balance(chain, &input.address, &self.wallet_address)
+            .chain_client(chain.chain_id)?
+            .balance_of(&input.address, &self.evm.wallet_address)
             .await?;
-        if !hex_is_at_least(&balance, &amount)? {
+        if compare_decimal_integers(&balance, &amount) == Ordering::Less {
             bail!(
                 "{} has insufficient {} balance for {}",
                 chain.name,
@@ -170,44 +198,6 @@ impl UniswapVenue {
         })
     }
 
-    async fn balance(&self, chain: &EvmChain, token: &str, owner: &str) -> Result<String> {
-        let method;
-        let params;
-        if is_native_token(token) {
-            method = "eth_getBalance";
-            params = json!([owner, "latest"]);
-        } else {
-            method = "eth_call";
-            let owner = owner.trim_start_matches("0x");
-            let data = format!("0x70a08231000000000000000000000000{owner}");
-            params = json!([{"to": token, "data": data}, "latest"]);
-        }
-        let response = self
-            .http
-            .post(&chain.rpc_url)
-            .json(&json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": method,
-                "params": params
-            }))
-            .send()
-            .await
-            .with_context(|| format!("{} RPC request failed", chain.name))?;
-        let status = response.status();
-        let body: Value = response
-            .json()
-            .await
-            .with_context(|| format!("{} RPC returned invalid JSON", chain.name))?;
-        if !status.is_success() || body.get("error").is_some() {
-            bail!("{} RPC balance error: {}", chain.name, compact(&body));
-        }
-        body.get("result")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .context("RPC balance response has no result")
-    }
-
     async fn api_post(&self, endpoint: &str, body: &Value) -> Result<Value> {
         let response = self
             .http
@@ -230,69 +220,48 @@ impl UniswapVenue {
         Ok(body)
     }
 
-    async fn send_transaction(
+    /// Turns a validated Uniswap API transaction into a signable one.
+    ///
+    /// The API supplies the target, calldata and value; nonce and fees come from
+    /// `ctx`. The gas limit is taken from the API when present and estimated
+    /// against the node otherwise.
+    async fn build_unsigned(
         &self,
-        rpc_url: &str,
-        chain_id: u64,
         transaction: &Value,
+        ctx: &TxContext,
         expected_to: &str,
         expected_value: &str,
-    ) -> Result<String> {
+    ) -> Result<UnsignedTx> {
         validate_transaction(
             transaction,
-            &self.wallet_address,
-            chain_id,
+            &self.evm.wallet_address,
+            ctx.chain_id,
             expected_to,
             expected_value,
         )?;
-        let to = string_field(transaction, "to")?;
-        let data = string_field(transaction, "data")?;
-        let value = transaction
-            .get("value")
-            .and_then(Value::as_str)
-            .unwrap_or("0");
-        let to_addr = Address::from_str(to).context("invalid to address")?;
-        let data_bytes = Bytes::from_str(data).context("invalid data")?;
-        let value_u256 = U256::from_str_radix(value, 10)
-            .or_else(|_| U256::from_str_radix(value.trim_start_matches("0x"), 16))
-            .unwrap_or_default();
+        let to = string_field(transaction, "to")?.to_string();
+        let data = string_field(transaction, "data")?.to_string();
+        let value = decimal_value(transaction)?;
 
-        let password = std::fs::read_to_string(&self.evm.password_file)
-            .with_context(|| format!("cannot read password file {}", self.evm.password_file))?;
-        let key = eth_keystore::decrypt_key(&self.evm.keystore_path, password.trim())
-            .with_context(|| format!("cannot decrypt keystore {}", self.evm.keystore_path))?;
-        let signer =
-            PrivateKeySigner::from_slice(&key).context("invalid private key in keystore")?;
-        let wallet = EthereumWallet::from(signer);
+        let gas_limit = match api_gas_limit(transaction)? {
+            Some(gas_limit) => gas_limit,
+            None => {
+                self.chain_client(ctx.chain_id)?
+                    .estimate_gas(&self.evm.wallet_address, &to, &value, &data)
+                    .await?
+            }
+        };
 
-        let provider = ProviderBuilder::new()
-            .wallet(wallet)
-            .connect(rpc_url)
-            .await
-            .with_context(|| format!("failed to connect to {}", rpc_url))?;
-
-        let tx = TransactionRequest::default()
-            .with_to(to_addr)
-            .with_input(data_bytes)
-            .with_value(value_u256)
-            .with_chain_id(chain_id);
-
-        let pending = provider
-            .send_transaction(tx)
-            .await
-            .with_context(|| "failed to send transaction")?;
-
-        let tx_hash = *pending.tx_hash();
-        let receipt = pending
-            .get_receipt()
-            .await
-            .with_context(|| "failed to get transaction receipt")?;
-
-        if !receipt.status() {
-            bail!("transaction reverted: {}", tx_hash);
-        }
-
-        Ok(format!("{:?}", tx_hash))
+        Ok(UnsignedTx {
+            chain_id: ctx.chain_id,
+            nonce: ctx.nonce,
+            gas_limit,
+            max_fee_per_gas: ctx.max_fee_per_gas,
+            max_priority_fee_per_gas: ctx.max_priority_fee_per_gas,
+            to,
+            value,
+            data,
+        })
     }
 }
 
@@ -350,80 +319,87 @@ impl TradeVenue for UniswapVenue {
             .with_context(|| format!("no executable same-chain quote: {}", failures.join("; ")))
     }
 
-    async fn execute(&self, plan: &ExecutionPlan) -> Result<VenueExecution> {
+    async fn steps(&self, plan: &ExecutionPlan) -> Result<Vec<ExecStep>> {
         let ExecutionPlan::Uniswap {
-            chain_name,
             chain_id,
-            rpc_url,
             input_token,
             input_amount,
-            quote,
+            ..
         } = plan
         else {
             bail!("Uniswap received a DeepBook execution plan");
         };
+        if is_native_token(input_token) {
+            return Ok(vec![ExecStep::Swap]);
+        }
+        let approval = self
+            .check_approval(*chain_id, input_token, input_amount)
+            .await?;
+        Ok(steps_from_check_approval(&approval))
+    }
 
-        let mut transactions = Vec::new();
-        if !is_native_token(input_token) {
-            let approval = self
-                .api_post(
-                    "check_approval",
-                    &json!({
-                        "walletAddress": self.wallet_address,
-                        "token": input_token,
-                        "amount": input_amount,
-                        "chainId": chain_id
-                    }),
-                )
-                .await?;
-            for field in ["cancel", "approval"] {
-                if let Some(transaction) = approval.get(field).filter(|value| !value.is_null()) {
-                    validate_approval_calldata(transaction, PROXY_APPROVAL_ADDRESS)?;
-                    transactions.push(TransactionReference {
-                        kind: field.to_string(),
-                        id: self
-                            .send_transaction(rpc_url, *chain_id, transaction, input_token, "0")
-                            .await?,
-                    });
-                }
-            }
+    async fn build(
+        &self,
+        plan: &ExecutionPlan,
+        step: ExecStep,
+        ctx: &TxContext,
+    ) -> Result<UnsignedTx> {
+        let ExecutionPlan::Uniswap {
+            chain_id,
+            input_token,
+            input_amount,
+            quote,
+            ..
+        } = plan
+        else {
+            bail!("Uniswap received a DeepBook execution plan");
+        };
+        if *chain_id != ctx.chain_id {
+            bail!(
+                "transaction context is for chain {} but the plan targets {chain_id}",
+                ctx.chain_id
+            );
         }
 
-        let swap = self
-            .api_post(
-                "swap",
-                &json!({
-                    "quote": quote,
-                    "simulateTransaction": true,
-                    "safetyMode": "SAFE"
-                }),
-            )
-            .await?;
-        let transaction = swap
-            .get("swap")
-            .context("Uniswap /swap has no transaction")?;
-        let expected_value = if is_native_token(input_token) {
-            input_amount.as_str()
-        } else {
-            "0"
-        };
-        transactions.push(TransactionReference {
-            kind: "swap".into(),
-            id: self
-                .send_transaction(
-                    rpc_url,
-                    *chain_id,
-                    transaction,
-                    PROXY_APPROVAL_ADDRESS,
-                    expected_value,
-                )
-                .await?,
-        });
-        Ok(VenueExecution {
-            venue: "uniswap".into(),
-            chain: chain_name.clone(),
-            transactions,
-        })
+        match step {
+            // Re-fetched rather than carried over from `steps` so a resumed
+            // execution can rebuild this transaction from the plan alone.
+            ExecStep::Cancel | ExecStep::Approval => {
+                let approval = self
+                    .check_approval(*chain_id, input_token, input_amount)
+                    .await?;
+                let field = step.as_str();
+                let transaction = approval
+                    .get(field)
+                    .filter(|value| !value.is_null())
+                    .with_context(|| format!("Uniswap no longer requires a {field} transaction"))?;
+                validate_approval_calldata(transaction, PROXY_APPROVAL_ADDRESS)?;
+                self.build_unsigned(transaction, ctx, input_token, "0")
+                    .await
+            }
+            ExecStep::Swap => {
+                let swap = self
+                    .api_post(
+                        "swap",
+                        &json!({
+                            "quote": quote,
+                            "simulateTransaction": true,
+                            "safetyMode": "SAFE"
+                        }),
+                    )
+                    .await?;
+                let transaction = swap
+                    .get("swap")
+                    .context("Uniswap /swap has no transaction")?;
+                let expected_value = if is_native_token(input_token) {
+                    input_amount.as_str()
+                } else {
+                    "0"
+                };
+                self.build_unsigned(transaction, ctx, PROXY_APPROVAL_ADDRESS, expected_value)
+                    .await
+            }
+        }
     }
 }
 
@@ -451,19 +427,85 @@ fn chain_requested(chain: &EvmChain, requested: &[String]) -> bool {
         })
 }
 
-fn is_native_token(address: &str) -> bool {
-    address.eq_ignore_ascii_case("0x0000000000000000000000000000000000000000")
+/// Maps a `check_approval` response onto the steps it implies. The swap always
+/// runs last; the allowance transactions only appear when Uniswap asks for them.
+fn steps_from_check_approval(approval: &Value) -> Vec<ExecStep> {
+    let mut steps = Vec::new();
+    for (field, step) in [
+        ("cancel", ExecStep::Cancel),
+        ("approval", ExecStep::Approval),
+    ] {
+        if approval.get(field).is_some_and(|value| !value.is_null()) {
+            steps.push(step);
+        }
+    }
+    steps.push(ExecStep::Swap);
+    steps
 }
 
-fn hex_is_at_least(value: &str, minimum: &str) -> Result<bool> {
-    let value = value.strip_prefix("0x").unwrap_or(value);
-    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        bail!("RPC balance is not a hex quantity");
+/// Reads the transaction's native value as a decimal string, accepting the
+/// decimal or hex forms the API may use.
+fn decimal_value(transaction: &Value) -> Result<String> {
+    let raw = transaction
+        .get("value")
+        .and_then(Value::as_str)
+        .unwrap_or("0");
+    if let Some(hex) = raw.strip_prefix("0x") {
+        return hex_to_decimal(hex);
     }
-    validate_decimal_integer(minimum)?;
-    let value = value.trim_start_matches('0');
-    let minimum = decimal_to_hex(minimum)?;
-    Ok(value.len() > minimum.len() || (value.len() == minimum.len() && value >= minimum.as_str()))
+    validate_decimal_integer(raw).context("transaction value is not a decimal integer")?;
+    Ok(raw.to_string())
+}
+
+/// The gas limit the venue's API supplied, if any.
+fn api_gas_limit(transaction: &Value) -> Result<Option<u64>> {
+    for field in ["gasLimit", "gas"] {
+        let Some(raw) = transaction.get(field) else {
+            continue;
+        };
+        if let Some(number) = raw.as_u64() {
+            return Ok(Some(number));
+        }
+        let Some(text) = raw.as_str() else { continue };
+        let parsed = match text.strip_prefix("0x") {
+            Some(hex) => u64::from_str_radix(hex, 16),
+            None => text.parse::<u64>(),
+        };
+        return parsed
+            .map(Some)
+            .with_context(|| format!("transaction {field} is not a u64: {text}"));
+    }
+    Ok(None)
+}
+
+fn hex_to_decimal(hex: &str) -> Result<String> {
+    if hex.is_empty() || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("expected a hex quantity");
+    }
+    let mut digits: Vec<u8> = vec![0];
+    for byte in hex.bytes() {
+        let mut carry = char::from(byte).to_digit(16).expect("checked hex digit");
+        for digit in digits.iter_mut() {
+            let product = u32::from(*digit) * 16 + carry;
+            *digit = (product % 10) as u8;
+            carry = product / 10;
+        }
+        while carry > 0 {
+            digits.push((carry % 10) as u8);
+            carry /= 10;
+        }
+    }
+    let text: String = digits
+        .iter()
+        .rev()
+        .map(|digit| char::from(b'0' + digit))
+        .collect();
+    let trimmed = text.trim_start_matches('0');
+    Ok(if trimmed.is_empty() {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    })
 }
 
 fn validate_transaction(
@@ -683,16 +725,59 @@ fn compact(value: &Value) -> String {
 mod tests {
     use serde_json::json;
 
+    use tempo_agentic_domain::ExecStep;
+
     use super::{
-        PROXY_APPROVAL_ADDRESS, compare_scaled_amounts, hex_is_at_least, slippage_percent_json,
-        validate_transaction,
+        PROXY_APPROVAL_ADDRESS, api_gas_limit, compare_scaled_amounts, decimal_value,
+        hex_to_decimal, slippage_percent_json, steps_from_check_approval, validate_transaction,
     };
 
     #[test]
-    fn compares_rpc_balance_without_uint256_truncation() {
-        assert!(hex_is_at_least("0x0100", "255").unwrap());
-        assert!(!hex_is_at_least("0x00ff", "256").unwrap());
-        assert!(hex_is_at_least("0x10000000000000000", "18446744073709551616").unwrap());
+    fn converts_rpc_hex_without_uint256_truncation() {
+        assert_eq!(hex_to_decimal("0100").unwrap(), "256");
+        assert_eq!(hex_to_decimal("00ff").unwrap(), "255");
+        assert_eq!(
+            hex_to_decimal("10000000000000000").unwrap(),
+            "18446744073709551616"
+        );
+        assert_eq!(hex_to_decimal("0").unwrap(), "0");
+        assert!(hex_to_decimal("zz").is_err());
+    }
+
+    #[test]
+    fn approval_response_decides_the_step_sequence() {
+        assert_eq!(
+            steps_from_check_approval(&json!({"cancel": {"to": "0x1"}, "approval": {"to": "0x2"}})),
+            vec![ExecStep::Cancel, ExecStep::Approval, ExecStep::Swap]
+        );
+        assert_eq!(
+            steps_from_check_approval(&json!({"approval": {"to": "0x2"}})),
+            vec![ExecStep::Approval, ExecStep::Swap]
+        );
+        assert_eq!(
+            steps_from_check_approval(&json!({"cancel": null, "approval": null})),
+            vec![ExecStep::Swap]
+        );
+        assert_eq!(steps_from_check_approval(&json!({})), vec![ExecStep::Swap]);
+    }
+
+    #[test]
+    fn reads_gas_limit_and_value_in_either_encoding() {
+        assert_eq!(
+            api_gas_limit(&json!({"gasLimit": "0x5208"})).unwrap(),
+            Some(21_000)
+        );
+        assert_eq!(
+            api_gas_limit(&json!({"gas": "21000"})).unwrap(),
+            Some(21_000)
+        );
+        assert_eq!(api_gas_limit(&json!({"gas": 21000})).unwrap(), Some(21_000));
+        assert_eq!(api_gas_limit(&json!({})).unwrap(), None);
+        assert!(api_gas_limit(&json!({"gas": "not-a-number"})).is_err());
+
+        assert_eq!(decimal_value(&json!({"value": "0x2a"})).unwrap(), "42");
+        assert_eq!(decimal_value(&json!({"value": "42"})).unwrap(), "42");
+        assert_eq!(decimal_value(&json!({})).unwrap(), "0");
     }
 
     #[test]

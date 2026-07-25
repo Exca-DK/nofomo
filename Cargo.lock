@@ -4822,12 +4822,25 @@ dependencies = [
  "anyhow",
  "serde_json",
  "sha2",
+ "tempo-agentic-chain",
  "tempo-agentic-config",
  "tempo-agentic-domain",
  "tempo-agentic-graph",
  "tempo-agentic-storage",
  "tempo-agentic-uniswap",
+ "tempo-agentic-vault",
  "tokio",
+]
+
+[[package]]
+name = "tempo-agentic-chain"
+version = "0.2.0"
+dependencies = [
+ "alloy",
+ "anyhow",
+ "async-trait",
+ "tempo-agentic-domain",
+ "tracing",
 ]
 
 [[package]]
@@ -4876,28 +4889,38 @@ dependencies = [
 name = "tempo-agentic-storage"
 version = "0.2.0"
 dependencies = [
+ "alloy-primitives",
  "anyhow",
  "async-trait",
  "serde_json",
  "sqlx",
  "tempo-agentic-domain",
+ "tempo-agentic-strategy",
  "tokio",
+]
+
+[[package]]
+name = "tempo-agentic-strategy"
+version = "0.2.0"
+dependencies = [
+ "alloy-primitives",
+ "anyhow",
+ "async-trait",
+ "serde",
+ "tempo-agentic-domain",
 ]
 
 [[package]]
 name = "tempo-agentic-uniswap"
 version = "0.2.0"
 dependencies = [
- "alloy",
  "anyhow",
  "async-trait",
- "eth-keystore",
  "reqwest 0.12.28",
  "serde_json",
  "tempo-agentic-config",
  "tempo-agentic-domain",
  "tempo-agentic-graph",
- "tokio",
 ]
 
 [[package]]
@@ -4906,6 +4929,7 @@ version = "0.2.0"
 dependencies = [
  "alloy",
  "anyhow",
+ "async-trait",
  "eth-keystore",
  "rand 0.8.7",
  "serde_json",
@@ -4913,6 +4937,8 @@ dependencies = [
  "sui-rpc",
  "sui-sdk-types",
  "sui-transaction-builder",
+ "tempo-agentic-domain",
+ "tokio",
 ]
 
 [[package]]

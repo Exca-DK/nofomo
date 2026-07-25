@@ -1,3 +1,7 @@
+mod signer;
+
+pub use signer::EvmSigner;
+
 use std::{
     fs,
     path::{Path, PathBuf},
