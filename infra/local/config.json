@@ -1,0 +1,54 @@
+{
+  "_comment": "Preconfigured for local dev: `make run`/`make health` bootstrap throwaway EVM and Sui dev accounts plus the SQLite DB, all under /tmp/tempo-agentic-dev on first run (see Makefile / infra/local/README.md). sui.owner/pool_id/deepbook_package_id below are placeholder-valid hex, not real IDs — fill in real rpc_url/api keys/pool IDs for anything beyond smoke-testing the MCP server.",
+  "state_db_path": "/tmp/tempo-agentic-dev/state.db",
+  "quote_ttl_seconds": 120,
+  "max_slippage_bps": 500,
+  "uniswap": {
+    "api_url": "https://trade-api.gateway.uniswap.org/v1",
+    "api_key_env": "UNISWAP_API_KEY"
+  },
+  "graph": {
+    "gateway_url": "https://gateway.thegraph.com/api",
+    "api_key_env": "GRAPH_API_KEY",
+    "min_pool_tvl_usd": "1000"
+  },
+  "evm": {
+    "wallet_address": "0x1111111111111111111111111111111111111111",
+    "cast_binary": "cast",
+    "keystore_path": "/tmp/tempo-agentic-dev/dev-keystore.json",
+    "password_file": "/tmp/tempo-agentic-dev/dev-keystore.password",
+    "chains": [
+      {
+        "name": "ethereum",
+        "chain_id": 1,
+        "rpc_url": "https://ethereum-rpc.publicnode.com",
+        "graph_subgraph_id": "REPLACE_WITH_UNISWAP_V3_ETHEREUM_SUBGRAPH_ID",
+        "tokens": {
+          "WETH": { "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", "decimals": 18 },
+          "USDC": { "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "decimals": 6 }
+        }
+      }
+    ]
+  },
+  "sui": {
+    "enabled": true,
+    "rpc_url": "https://fullnode.testnet.sui.io:443",
+    "cli_binary": "sui",
+    "client_config": "/tmp/tempo-agentic-dev/sui/client.yaml",
+    "owner": "0x1111111111111111111111111111111111111111111111111111111111111111",
+    "pool_id": "0x2222222222222222222222222222222222222222222222222222222222222222",
+    "deepbook_package_id": "0x3333333333333333333333333333333333333333333333333333333333333333",
+    "base": {
+      "symbol": "hBTC",
+      "coin_type": "0xREPLACE::btc::BTC",
+      "decimals": 8
+    },
+    "quote": {
+      "symbol": "USDC",
+      "coin_type": "0xREPLACE::usdc::USDC",
+      "decimals": 6
+    },
+    "deep_coin_type": "0xREPLACE::deep::DEEP",
+    "clock_id": "0x6"
+  }
+}
