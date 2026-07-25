@@ -21,6 +21,24 @@ pub fn fired_levels<'a>(
         .collect()
 }
 
+/// How long a level rests after an attempt before it may start another.
+const LEVEL_COOLDOWN_SECS: i64 = 60;
+
+/// Whether the level acted too recently to act again.
+///
+/// A failed order leaves the level armed, so without this a rule whose swap keeps
+/// reverting would start a fresh order on every tick — several a minute, each one
+/// costing a quote and often gas.
+///
+/// The status is deliberately not checked: any order that did not fail already
+/// blocks the level through [`is_spent`], so only failed ones reach here.
+pub fn cooling_down(level_id: &str, orders: &[Order], now: i64) -> bool {
+    orders
+        .iter()
+        .filter(|order| order.level_id == level_id)
+        .any(|order| now < order.created_at + LEVEL_COOLDOWN_SECS)
+}
+
 /// Whether a level has already been acted on.
 ///
 /// Any order that did not fail counts: one in flight must not be raced, and one

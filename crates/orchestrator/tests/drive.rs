@@ -2,7 +2,8 @@ mod common;
 
 use common::{Harness, Receipt, Script, phase};
 use tempo_agentic_domain::ExecStep;
-use tempo_agentic_strategy::OrderState;
+use tempo_agentic_orchestrator::SWAP_RETRY_CAP;
+use tempo_agentic_strategy::{OrderState, OrderStatus};
 
 #[tokio::test]
 async fn an_order_runs_to_filled_and_saves_before_every_side_effect() {
@@ -154,8 +155,10 @@ async fn a_build_failure_stops_before_anything_is_broadcast() {
     harness.cleanup();
 }
 
+// A refused send says nothing about the transaction, so the order keeps the
+// signed bytes and waits. The next pass resends exactly those.
 #[tokio::test]
-async fn a_broadcast_failure_keeps_the_hash_it_tried_to_send() {
+async fn a_failed_broadcast_waits_instead_of_failing_the_order() {
     let harness = Harness::new(
         "broadcast-error",
         Script {
@@ -167,10 +170,65 @@ async fn a_broadcast_failure_keeps_the_hash_it_tried_to_send() {
 
     let order = harness.drive("o-1").await;
 
-    let OrderState::Failed { tx_hash, .. } = &order.state else {
-        panic!("expected a failed order, got {:?}", order.state);
+    assert_eq!(phase(&order.state), "broadcasting");
+    let stored = harness.stored("o-1").await;
+    assert_eq!(stored.swap_attempts, 1);
+    assert!(
+        stored.swap_retry_after_ts.is_some(),
+        "the schedule has to be on disk, or a restart would resend at once"
+    );
+    assert_eq!(stored.tx_hash(), Some("0xhash0"));
+    harness.cleanup();
+}
+
+#[tokio::test]
+async fn a_scheduled_retry_does_not_run_early() {
+    let harness = Harness::new("backoff", Script::default()).await;
+    let mut waiting = harness.stored("o-1").await;
+    waiting.swap_retry_after_ts = Some(i64::MAX);
+    harness.put(&waiting).await;
+
+    harness.drive("o-1").await;
+
+    assert_eq!(harness.signatures(), 0);
+    assert_eq!(harness.broadcasts(), 0);
+    assert_eq!(phase(&harness.stored("o-1").await.state), "swap_ready");
+    harness.cleanup();
+}
+
+// Retries are not endless: a node that never accepts the bytes parks the order,
+// which keeps the level blocked instead of letting it spend more gas.
+#[tokio::test]
+async fn broadcasts_that_keep_failing_end_in_quarantine() {
+    let harness = Harness::new(
+        "quarantine",
+        Script {
+            broadcast_fails: true,
+            ..Script::default()
+        },
+    )
+    .await;
+
+    // Each pass burns one attempt and schedules the next; clearing the timer
+    // stands in for waiting the backoff out.
+    for _ in 0..=SWAP_RETRY_CAP {
+        let mut ready = harness.stored("o-1").await;
+        ready.swap_retry_after_ts = None;
+        harness.put(&ready).await;
+        harness.drive("o-1").await;
+    }
+
+    let order = harness.stored("o-1").await;
+    let OrderState::SwapQuarantined { tx_hash, .. } = &order.state else {
+        panic!("expected a quarantined order, got {:?}", order.state);
     };
-    assert_eq!(tx_hash.as_deref(), Some("0xhash0"));
+    assert_eq!(
+        tx_hash.as_deref(),
+        Some("0xhash0"),
+        "an operator needs the hash to check whether the bytes landed"
+    );
+    assert_eq!(order.status(), OrderStatus::Quarantined);
+    assert!(order.is_terminal());
     harness.cleanup();
 }
 

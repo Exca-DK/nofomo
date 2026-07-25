@@ -4874,7 +4874,9 @@ dependencies = [
  "clap",
  "serde_json",
  "tempo-agentic-config",
+ "tempo-agentic-orchestrator",
  "tempo-agentic-storage",
+ "tempo-agentic-strategy",
  "tempo-agentic-vault",
  "tokio",
 ]

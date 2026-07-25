@@ -2,7 +2,10 @@ use alloy_primitives::U256;
 use tempo_agentic_domain::{ExecStep, ExecutionPlan, SignedTx, VenueName};
 use tempo_agentic_strategy::{Level, Order, OrderState, Side};
 
-use tempo_agentic_orchestrator::{Action, Outcome, apply, next_action};
+use tempo_agentic_orchestrator::{
+    Action, Outcome, SWAP_RETRY_CAP, SWAP_RETRY_MAX_BACKOFF_SECS, apply, next_action,
+    swap_retry_backoff_secs,
+};
 
 const AMOUNT: u64 = 1_000_000;
 
@@ -48,6 +51,16 @@ fn submitted(step: ExecStep) -> OrderState {
     }
 }
 
+fn broadcasting() -> OrderState {
+    OrderState::Broadcasting {
+        step: ExecStep::Swap,
+        amount_in: U256::from(AMOUNT),
+        signed_tx: "0x02f8".into(),
+        tx_hash: "0xdef".into(),
+        withdraw_action_id: None,
+    }
+}
+
 fn signed() -> SignedTx {
     SignedTx {
         raw: "0x02f8".into(),
@@ -87,7 +100,7 @@ fn every_state_asks_for_its_own_action() {
         },
         OrderState::SwapQuarantined {
             amount_in: U256::from(AMOUNT),
-            withdraw_action_id: "w-1".into(),
+            tx_hash: None,
             reason: "nope".into(),
         },
     ] {
@@ -185,10 +198,10 @@ fn a_revert_fails_the_order_and_keeps_the_hash() {
     );
 }
 
-// Nothing was signed yet, so there is no hash to record; once there is one it
-// stays with the failure.
+// Nothing was signed yet, so nothing is at stake and no hash exists to record.
+// Ending here is what lets the level fire again with a fresh quote.
 #[test]
-fn a_failure_carries_a_hash_only_once_one_exists() {
+fn a_failure_before_signing_ends_the_order_without_a_hash() {
     let before = order(swap_ready(ExecStep::Swap));
     assert_eq!(
         apply(
@@ -204,28 +217,77 @@ fn a_failure_carries_a_hash_only_once_one_exists() {
             reason: "build failed".into(),
         }
     );
+}
 
-    let after = order(OrderState::Broadcasting {
-        step: ExecStep::Swap,
-        amount_in: U256::from(AMOUNT),
-        signed_tx: "0x02f8".into(),
-        tx_hash: "0xdef".into(),
-        withdraw_action_id: None,
-    });
+// Holding the state is the whole mechanism: `next_action` reads `Broadcasting`
+// again and hands back the very same bytes.
+#[test]
+fn a_refused_send_holds_the_state_so_the_same_bytes_go_again() {
+    let mut order = order(broadcasting());
+    order.swap_attempts = SWAP_RETRY_CAP - 1;
     assert_eq!(
         apply(
-            &after,
+            &order,
+            Outcome::ExecFailed {
+                reason: "rpc down".into()
+            }
+        )
+        .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn a_refused_send_past_the_cap_parks_the_order() {
+    let mut order = order(broadcasting());
+    order.swap_attempts = SWAP_RETRY_CAP;
+    assert_eq!(
+        apply(
+            &order,
             Outcome::ExecFailed {
                 reason: "rpc down".into()
             }
         )
         .unwrap()
         .unwrap(),
-        OrderState::Failed {
+        OrderState::SwapQuarantined {
+            amount_in: U256::from(AMOUNT),
+            // Kept so an operator can check whether the bytes landed anyway.
             tx_hash: Some("0xdef".into()),
             reason: "rpc down".into(),
         }
     );
+}
+
+// `Failed` is the landing because it is the only status that frees the level.
+#[test]
+fn resolving_a_quarantine_releases_the_level() {
+    let parked = order(OrderState::SwapQuarantined {
+        amount_in: U256::from(AMOUNT),
+        tx_hash: Some("0xdef".into()),
+        reason: "rpc down".into(),
+    });
+    let released = apply(&parked, Outcome::QuarantineResolved)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        released,
+        OrderState::Failed {
+            tx_hash: Some("0xdef".into()),
+            reason: "quarantine resolved by operator".into(),
+        }
+    );
+}
+
+#[test]
+fn resolving_an_order_that_is_not_parked_is_rejected() {
+    let error = apply(
+        &order(submitted(ExecStep::Swap)),
+        Outcome::QuarantineResolved,
+    )
+    .unwrap_err();
+    assert_eq!(error.state, "Submitted");
+    assert_eq!(error.outcome, "QuarantineResolved");
 }
 
 #[test]
@@ -259,4 +321,24 @@ fn an_outcome_that_cannot_follow_the_state_is_rejected() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn the_backoff_doubles_and_then_holds() {
+    assert_eq!(swap_retry_backoff_secs(1), 2);
+    assert_eq!(swap_retry_backoff_secs(2), 4);
+    assert_eq!(swap_retry_backoff_secs(3), 8);
+    assert_eq!(swap_retry_backoff_secs(8), 256);
+    assert_eq!(
+        swap_retry_backoff_secs(100),
+        SWAP_RETRY_MAX_BACKOFF_SECS,
+        "a huge attempt count must not overflow the shift"
+    );
+}
+
+// The count is raised before the delay is read, so zero never reaches here. It
+// still has to answer with a real pause rather than none.
+#[test]
+fn a_zero_attempt_count_still_pauses() {
+    assert_eq!(swap_retry_backoff_secs(0), 2);
 }

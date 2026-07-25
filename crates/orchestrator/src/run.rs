@@ -1,11 +1,11 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use tempo_agentic_strategy::{Order, OrderState, OrderStore};
 
 use crate::io::{ExecDeps, perform};
-use crate::machine::{Action, Outcome, apply, next_action};
+use crate::machine::{Action, Outcome, apply, next_action, swap_retry_backoff_secs};
 
 /// Transitions one pass may make before yielding. A venue that keeps asking for
 /// the same approval would otherwise spin here, broadcasting every round.
@@ -75,6 +75,12 @@ pub async fn drive_order(
     order: &mut Order,
 ) -> Result<()> {
     for _ in 0..MAX_TRANSITIONS_PER_PASS {
+        // Checked before anything else. A broadcast retry deliberately leaves the
+        // state alone, so without this gate the loop would resend on the spot.
+        if order.swap_retry_after_ts.is_some_and(|at| now_unix() < at) {
+            return Ok(());
+        }
+
         let action = next_action(order);
         if action == Action::Done {
             return Ok(());
@@ -84,18 +90,32 @@ pub async fn drive_order(
         match apply(order, outcome) {
             Ok(Some(next)) => {
                 order.state = next;
+                // Whatever retry was scheduled belonged to the attempt that just
+                // ended.
+                order.swap_retry_after_ts = None;
                 orders
                     .upsert_order(order)
                     .await
                     .context("persist transition")?;
-                match &order.state {
-                    OrderState::Failed { reason, .. } => {
-                        tracing::warn!(order = %order.id, reason, "order failed");
-                    }
-                    state => {
-                        tracing::info!(order = %order.id, status = order.status().as_str(), phase = ?state, "order advanced");
-                    }
-                }
+                announce(order);
+            }
+            // The state held but the attempt failed, which happens only where a
+            // resend is worth trying. Sleep on it rather than hammer the node.
+            Ok(None) if !still_pending => {
+                order.swap_attempts = order.swap_attempts.saturating_add(1);
+                let backoff = swap_retry_backoff_secs(order.swap_attempts);
+                order.swap_retry_after_ts = Some(now_unix() + backoff);
+                orders
+                    .upsert_order(order)
+                    .await
+                    .context("persist retry schedule")?;
+                tracing::warn!(
+                    order = %order.id,
+                    attempts = order.swap_attempts,
+                    backoff,
+                    "broadcast failed; resending the same bytes later"
+                );
+                return Ok(());
             }
             Ok(None) => {}
             // A data or programming error rather than a trade failure, so stop
@@ -114,4 +134,42 @@ pub async fn drive_order(
         "stopped after {MAX_TRANSITIONS_PER_PASS} transitions in one pass"
     );
     Ok(())
+}
+
+fn announce(order: &Order) {
+    match &order.state {
+        OrderState::Failed { reason, .. } => {
+            tracing::warn!(order = %order.id, reason, "order failed");
+        }
+        // The last moment a sweep can still see this order: it turns terminal
+        // next, its level stays blocked, and only an operator can release it.
+        OrderState::SwapQuarantined {
+            reason, tx_hash, ..
+        } => {
+            tracing::warn!(
+                order = %order.id,
+                level = %order.level_id,
+                attempts = order.swap_attempts,
+                tx_hash = tx_hash.as_deref().unwrap_or("none"),
+                reason,
+                "order quarantined after exhausting its broadcast retries; the \
+                 level stays blocked until resolve-quarantine runs"
+            );
+        }
+        state => {
+            tracing::info!(
+                order = %order.id,
+                status = order.status().as_str(),
+                phase = ?state,
+                "order advanced"
+            );
+        }
+    }
+}
+
+fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or(0)
 }

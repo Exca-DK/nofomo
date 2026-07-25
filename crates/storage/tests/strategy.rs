@@ -153,7 +153,7 @@ async fn every_order_state_round_trips_with_exact_amounts() {
         },
         OrderState::SwapQuarantined {
             amount_in,
-            withdraw_action_id: "act-1".into(),
+            tx_hash: Some("0xdeadbeef".into()),
             reason: "retries exhausted".into(),
         },
     ];

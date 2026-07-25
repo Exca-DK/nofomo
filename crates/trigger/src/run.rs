@@ -8,7 +8,7 @@ use tempo_agentic_price::PriceTick;
 use tempo_agentic_strategy::{Level, LevelStore, Order, OrderStore};
 use tokio::sync::{Notify, mpsc};
 
-use crate::fired::fired_levels;
+use crate::fired::{cooling_down, fired_levels};
 use crate::resolver::TokenResolver;
 
 /// How long a level stays quiet after its pre-flight was rejected.
@@ -62,6 +62,12 @@ async fn handle_tick(
     let mut created = false;
     for level in fired_levels(&levels, &orders, tick, &deps.resolver) {
         if quiet_until.get(&level.id).is_some_and(|until| now < *until) {
+            continue;
+        }
+        // The two rests do different jobs and neither replaces the other. This one
+        // reads the orders on disk, so it survives a restart; the map above holds
+        // levels whose pre-flight was refused, where no order exists to read.
+        if cooling_down(&level.id, &orders, now) {
             continue;
         }
         match place_order(deps, level, tick, now).await {
