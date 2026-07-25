@@ -46,7 +46,7 @@ impl AgentHandler {
     }
 
     #[tool(
-        description = "Create a short-lived, one-time exact-input quote. Uniswap checks all requested pre-funded chains without bridging; DeepBook dry-runs the configured Sui testnet hBTC pool. This never executes a transaction."
+        description = "Create a short-lived, one-time exact-input quote. Uniswap checks all requested pre-funded chains without bridging; Cetus quotes directly against the matching Sui testnet CLMM pool for the requested coin pair. This never executes a transaction."
     )]
     async fn quote_trade(
         &self,

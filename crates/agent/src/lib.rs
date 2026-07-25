@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use tempo_agentic_chain::EvmChainClient;
 use tempo_agentic_config::{Config, EvmChain};
 
+use tempo_agentic_cetus::CetusVenue;
 use tempo_agentic_domain::{
     AuditStore, ChainClient, ExecuteTradeRequest, ExecutionPlan, ExecutionView, MarketResearch,
     MarketResearchRequest, QuoteTradeRequest, QuoteView, ReceiptStatus, Signer, StoredQuote,
@@ -42,7 +43,6 @@ impl AgentService {
     /// cannot be initialized.
     pub fn new(config: Config, audit: Arc<dyn AuditStore>) -> Result<Self> {
         let graph = GraphClient::new(&config.graph)?;
-
         let mut chains: HashMap<u64, Arc<dyn ChainClient>> = HashMap::new();
         for chain in &config.evm.chains {
             let client = EvmChainClient::new(&chain.rpc_url, chain.chain_id)
@@ -57,7 +57,7 @@ impl AgentService {
             Path::new(&config.evm.password_file),
         )?);
 
-        let venues: Vec<Arc<dyn TradeVenue>> = vec![Arc::new(UniswapVenue::new(
+        let mut venues: Vec<Arc<dyn TradeVenue>> = vec![Arc::new(UniswapVenue::new(
             &config.uniswap,
             &config.evm,
             signer.address().to_string(),
@@ -65,6 +65,9 @@ impl AgentService {
             graph.clone(),
             config.max_slippage_bps,
         )?)];
+        if config.sui.enabled {
+            venues.push(Arc::new(CetusVenue::new(&config.sui)?));
+        }
         Ok(Self {
             config: Arc::new(config),
             graph,
@@ -138,9 +141,15 @@ impl AgentService {
         // Transactions are collected as they are broadcast, so a failure on a
         // later step still reports the ones that already reached the chain.
         let mut transactions = Vec::new();
-        let outcome = self
-            .run_plan(&quote.draft.venue, &quote.draft.plan, &mut transactions)
-            .await;
+        let venue_ref = self.venue(&quote.draft.venue)?;
+        let outcome = if quote.draft.venue == "cetus" {
+            venue_ref.execute(&quote.draft.plan).await.map(|txs| {
+                transactions.extend(txs);
+            })
+        } else {
+            self.run_plan(&quote.draft.venue, &quote.draft.plan, &mut transactions)
+                .await
+        };
         if let Err(error) = outcome {
             let _ = self.audit.record_execution_failure(attempt_id).await;
             return Err(error);

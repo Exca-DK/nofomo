@@ -36,21 +36,8 @@
   },
   "sui": {
     "enabled": true,
+    "network": "testnet",
     "rpc_url": "https://fullnode.testnet.sui.io:443",
-    "keystore_path": "/tmp/tempo-agentic-dev/sui/sui.keystore",
-    "pool_id": "0x2222222222222222222222222222222222222222222222222222222222222222",
-    "deepbook_package_id": "0x3333333333333333333333333333333333333333333333333333333333333333",
-    "base": {
-      "symbol": "hBTC",
-      "coin_type": "0xREPLACE::btc::BTC",
-      "decimals": 8
-    },
-    "quote": {
-      "symbol": "USDC",
-      "coin_type": "0xREPLACE::usdc::USDC",
-      "decimals": 6
-    },
-    "deep_coin_type": "0xREPLACE::deep::DEEP",
-    "clock_id": "0x6"
+    "keystore_path": "/tmp/tempo-agentic-dev/sui/sui.keystore"
   }
 }
