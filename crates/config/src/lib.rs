@@ -56,6 +56,10 @@ pub struct EvmChain {
     pub name: String,
     pub chain_id: u64,
     pub rpc_url: String,
+    /// The Graph subgraph ID for this chain's Uniswap pools. Empty when the
+    /// chain has no indexed subgraph, in which case the research guard is
+    /// skipped and the Uniswap quote validation is the only safety check.
+    #[serde(default)]
     pub graph_subgraph_id: String,
     pub tokens: HashMap<String, EvmToken>,
 }
@@ -125,9 +129,9 @@ impl Config {
         validate_secret_files(&self.evm.keystore_path, &self.evm.password_file)?;
         let mut chain_ids = HashSet::new();
         for chain in &self.evm.chains {
-            if !matches!(chain.chain_id, 1 | 8453 | 42161) {
+            if !is_supported_evm_chain(chain.chain_id) {
                 bail!(
-                    "unsupported chain {}: this build intentionally supports Ethereum, Base and Arbitrum only",
+                    "unsupported chain {}: supported chains are Ethereum, Base, Arbitrum, Unichain and Robinhood Chain",
                     chain.chain_id
                 );
             }
@@ -138,8 +142,10 @@ impl Config {
                 bail!("EVM chain name must not be empty");
             }
             validate_http_url(&chain.rpc_url).with_context(|| format!("{} RPC URL", chain.name))?;
-            if chain.graph_subgraph_id.trim().is_empty()
-                || chain.graph_subgraph_id.chars().any(char::is_whitespace)
+            // An empty ID means the chain has no indexed Uniswap subgraph (e.g.
+            // Robinhood Chain); the venue skips the research guard there.
+            if !chain.graph_subgraph_id.is_empty()
+                && chain.graph_subgraph_id.chars().any(char::is_whitespace)
             {
                 bail!("{} has an invalid Graph subgraph ID", chain.name);
             }
@@ -169,6 +175,15 @@ impl Config {
         }
         Ok(())
     }
+}
+
+/// EVM chains this build's Uniswap Trading API integration is wired for.
+///
+/// Ethereum, Base and Arbitrum are the original set; Unichain (130) and
+/// Robinhood Chain (4663) add Uniswap-native and tokenized-stock liquidity. A
+/// chain absent here is rejected at config load.
+pub fn is_supported_evm_chain(chain_id: u64) -> bool {
+    matches!(chain_id, 1 | 8453 | 42161 | 130 | 4663)
 }
 
 /// Reads an environment variable value by name.
@@ -305,11 +320,21 @@ fn default_max_slippage_bps() -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_hex_address;
+    use super::{is_supported_evm_chain, validate_hex_address};
 
     #[test]
     fn validates_evm_address_shape() {
         assert!(validate_hex_address("0x0000000000000000000000000000000000000000").is_ok());
         assert!(validate_hex_address("0x1234").is_err());
+    }
+
+    #[test]
+    fn supports_unichain_and_robinhood_alongside_the_originals() {
+        for id in [1, 8453, 42161, 130, 4663] {
+            assert!(is_supported_evm_chain(id), "chain {id} should be supported");
+        }
+        for id in [0, 10, 56, 137] {
+            assert!(!is_supported_evm_chain(id), "chain {id} should be rejected");
+        }
     }
 }

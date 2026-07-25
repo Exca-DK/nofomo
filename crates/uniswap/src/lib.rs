@@ -107,13 +107,24 @@ impl UniswapVenue {
             );
         }
 
-        let research = self
-            .graph
-            .research(&request.token_in, &request.token_out, &[chain])
-            .await?;
-        if !research.guard_passed {
-            bail!("{}", research.guard_reason);
-        }
+        // Chains without an indexed Uniswap subgraph (e.g. Robinhood Chain)
+        // can't be checked against The Graph, so the guard is skipped there and
+        // the Uniswap quote validation below is the only safety check.
+        let graph_guard = if chain.graph_subgraph_id.trim().is_empty() {
+            format!(
+                "graph guard skipped: no subgraph configured for {}",
+                chain.name
+            )
+        } else {
+            let research = self
+                .graph
+                .research(&request.token_in, &request.token_out, &[chain])
+                .await?;
+            if !research.guard_passed {
+                bail!("{}", research.guard_reason);
+            }
+            research.guard_reason
+        };
 
         let response = self
             .api_post(
@@ -189,7 +200,7 @@ impl UniswapVenue {
                     minimum_out,
                     output.decimals,
                 )?,
-                graph_guard: research.guard_reason,
+                graph_guard,
                 plan: ExecutionPlan::Uniswap {
                     chain_name: chain.name.clone(),
                     chain_id: chain.chain_id,
