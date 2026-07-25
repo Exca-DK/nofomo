@@ -7,7 +7,9 @@ use std::{
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use tempo_agentic_config::Config;
-use tempo_agentic_storage::SqliteAuditStore;
+use tempo_agentic_orchestrator::{Outcome, apply};
+use tempo_agentic_storage::{SqliteAuditStore, SqliteOrderStore};
+use tempo_agentic_strategy::OrderStore;
 use tempo_agentic_vault::{ChainVault, EvmVault, SuiVault};
 
 #[derive(Parser)]
@@ -36,6 +38,11 @@ enum Command {
     Prune {
         #[arg(long)]
         older_than_days: u32,
+    },
+    /// Release a quarantined order so its level can fire again.
+    ResolveQuarantine {
+        #[arg(long)]
+        order_id: String,
     },
     /// Import an existing account by private key instead of generating a throwaway one.
     ImportKey {
@@ -88,12 +95,38 @@ async fn main() -> Result<()> {
             let deleted = store.prune(i64::try_from(cutoff)?).await?;
             println!("deleted quotes: {deleted}");
         }
+        Command::ResolveQuarantine { order_id } => {
+            let (_, store) = load(&cli.config).await?;
+            resolve_quarantine(&SqliteOrderStore::new(store.pool().clone()), &order_id).await?;
+        }
         Command::ImportKey {
             chain,
             private_key,
             force,
         } => import_key(&cli.config, chain, &private_key, force)?,
     }
+    Ok(())
+}
+
+// Sends a parked order back to `failed`, the one status that leaves its level
+// free to fire again. The daemon then quotes afresh instead of retrying a plan
+// that has long gone stale.
+async fn resolve_quarantine(orders: &SqliteOrderStore, order_id: &str) -> Result<()> {
+    let mut order = orders
+        .get_order(order_id)
+        .await?
+        .with_context(|| format!("no order {order_id}"))?;
+    let released = apply(&order, Outcome::QuarantineResolved)
+        .with_context(|| format!("order {order_id} is not quarantined"))?
+        .context("releasing a quarantine has to change the state")?;
+    order.state = released;
+    order.swap_attempts = 0;
+    order.swap_retry_after_ts = None;
+    orders.upsert_order(&order).await?;
+    println!(
+        "order {order_id}: quarantine resolved, level {} released",
+        order.level_id
+    );
     Ok(())
 }
 

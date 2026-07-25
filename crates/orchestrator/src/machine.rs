@@ -34,6 +34,30 @@ pub enum Outcome {
     ExecFailed {
         reason: String,
     },
+    /// An operator released a quarantined order by hand. The only outcome no
+    /// execution ever produces.
+    QuarantineResolved,
+}
+
+/// Broadcast attempts an order may burn before it is parked. The count is raised
+/// after this decision, so the cap lands on the following attempt.
+pub const SWAP_RETRY_CAP: u32 = 8;
+
+/// Longest a retry is ever put off.
+pub const SWAP_RETRY_MAX_BACKOFF_SECS: i64 = 600;
+
+const SWAP_RETRY_INITIAL_BACKOFF_SECS: i64 = 2;
+
+/// How long to wait before the given attempt.
+///
+/// Doubles per attempt up to [`SWAP_RETRY_MAX_BACKOFF_SECS`], so a node that
+/// stays down is asked less and less often instead of on every sweep.
+pub fn swap_retry_backoff_secs(attempts: u32) -> i64 {
+    let shift = attempts.saturating_sub(1).min(20);
+    SWAP_RETRY_INITIAL_BACKOFF_SECS
+        .checked_shl(shift)
+        .unwrap_or(SWAP_RETRY_MAX_BACKOFF_SECS)
+        .min(SWAP_RETRY_MAX_BACKOFF_SECS)
 }
 
 #[derive(Debug, PartialEq, Eq, Error)]
@@ -112,12 +136,25 @@ pub fn apply(order: &Order, outcome: Outcome) -> Result<Option<OrderState>, Tran
             tx_hash,
             withdraw_action_id: withdraw_action_id.clone(),
         },
-        // The bytes may still be in a mempool somewhere, so the hash is worth
-        // keeping even though the send reported an error.
-        (S::Broadcasting { tx_hash, .. }, O::ExecFailed { reason }) => S::Failed {
-            tx_hash: Some(tx_hash.clone()),
-            reason,
-        },
+        // A refused send says nothing about the transaction: the bytes may sit in
+        // a mempool already. Retrying resends exactly the same bytes, which only
+        // works because a node reports an already-known transaction as accepted.
+        // Staying put is what makes that happen; the caller schedules the retry.
+        (
+            S::Broadcasting {
+                amount_in, tx_hash, ..
+            },
+            O::ExecFailed { reason },
+        ) => {
+            if order.swap_attempts < SWAP_RETRY_CAP {
+                return Ok(None);
+            }
+            S::SwapQuarantined {
+                amount_in: *amount_in,
+                tx_hash: Some(tx_hash.clone()),
+                reason,
+            }
+        }
 
         // The swap is always the plan's last step, so confirming it finishes the
         // order. Confirming an allowance step only clears the way for the next
@@ -147,6 +184,13 @@ pub fn apply(order: &Order, outcome: Outcome) -> Result<Option<OrderState>, Tran
         (S::Submitted { tx_hash, .. }, O::Reverted) => S::Failed {
             tx_hash: Some(tx_hash.clone()),
             reason: "reverted on-chain".to_string(),
+        },
+
+        // The one transition a person makes by hand. `Failed` is the landing
+        // because it is the only status that leaves the level free to fire again.
+        (S::SwapQuarantined { tx_hash, .. }, O::QuarantineResolved) => S::Failed {
+            tx_hash: tx_hash.clone(),
+            reason: "quarantine resolved by operator".to_string(),
         },
 
         (state, outcome) => {
@@ -181,5 +225,6 @@ fn outcome_name(outcome: &Outcome) -> &'static str {
         Outcome::StillPending => "StillPending",
         Outcome::Reverted => "Reverted",
         Outcome::ExecFailed { .. } => "ExecFailed",
+        Outcome::QuarantineResolved => "QuarantineResolved",
     }
 }

@@ -14,7 +14,7 @@ use tempo_agentic_domain::{
 };
 use tempo_agentic_price::{PricePair, PriceTick};
 use tempo_agentic_storage::{SqliteLevelStore, SqliteOrderStore, connect_pool};
-use tempo_agentic_strategy::{Level, LevelStore, OrderState, OrderStore, Side};
+use tempo_agentic_strategy::{Level, LevelStore, Order, OrderState, OrderStore, Side};
 use tempo_agentic_trigger::{TokenResolver, TriggerDeps, run};
 use tokio::sync::{Notify, mpsc};
 
@@ -316,4 +316,46 @@ async fn a_tick_that_fires_nothing_does_not_wake_anyone() {
         "nothing was created, so nothing should be woken"
     );
     fixture.cleanup();
+}
+
+// A failed order re-arms the level, but not on the very next tick: quoting again
+// straight away is what burns money on a rule whose swap keeps reverting.
+#[tokio::test]
+async fn a_level_that_just_failed_is_left_to_rest() {
+    let (fixture, deps) = Fixture::new("cooldown", true).await;
+    fixture.levels.upsert_level(&level()).await.unwrap();
+
+    let mut failed = Order::new("o-old".into(), &level(), plan(), now_secs());
+    failed.state = OrderState::Failed {
+        tx_hash: None,
+        reason: "reverted on-chain".into(),
+    };
+    fixture.orders.upsert_order(&failed).await.unwrap();
+
+    drive(deps, Arc::new(Notify::new()), vec![tick(2_999.0, 100)]).await;
+
+    assert_eq!(
+        fixture.calls.load(Ordering::SeqCst),
+        0,
+        "a resting level must not even be quoted"
+    );
+    assert_eq!(fixture.orders.list_orders().await.unwrap().len(), 1);
+    fixture.cleanup();
+}
+
+fn plan() -> ExecutionPlan {
+    ExecutionPlan::Uniswap {
+        chain_name: "base".into(),
+        chain_id: BASE_ID,
+        input_token: USDC.into(),
+        input_amount: "1000000".into(),
+        quote: json!({"tradeType": "EXACT_INPUT"}),
+    }
+}
+
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
 }

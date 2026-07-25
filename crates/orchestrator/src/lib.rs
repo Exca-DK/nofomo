@@ -3,5 +3,8 @@ mod machine;
 mod run;
 
 pub use io::{ExecDeps, perform};
-pub use machine::{Action, Outcome, TransitionError, apply, next_action};
+pub use machine::{
+    Action, Outcome, SWAP_RETRY_CAP, SWAP_RETRY_MAX_BACKOFF_SECS, TransitionError, apply,
+    next_action, swap_retry_backoff_secs,
+};
 pub use run::{Waker, drive_order, run, sweep};

@@ -166,6 +166,9 @@ struct FakeChain {
     receipts: Vec<Receipt>,
     receipt_calls: AtomicUsize,
     broadcasts: AtomicUsize,
+    /// Raw bytes of every send, so a test can prove a resumed order reused the
+    /// signature it already had instead of making a new one.
+    sent: Mutex<Vec<String>>,
     broadcast_fails: bool,
 }
 
@@ -199,6 +202,7 @@ impl ChainClient for FakeChain {
     async fn broadcast(&self, signed: &SignedTx) -> Result<String> {
         self.spy.record().await;
         self.broadcasts.fetch_add(1, Ordering::SeqCst);
+        self.sent.lock().unwrap().push(signed.raw.clone());
         if self.broadcast_fails {
             bail!("eth_sendRawTransaction failed: insufficient funds for gas");
         }
@@ -237,11 +241,13 @@ impl Default for Script {
 }
 
 pub struct Harness {
+    levels: Arc<SqliteLevelStore>,
     orders: Arc<SqliteOrderStore>,
     deps: ExecDeps,
     seen: Arc<Mutex<Vec<&'static str>>>,
     venue: Arc<FakeVenue>,
     chain: Arc<FakeChain>,
+    signer: Arc<FakeSigner>,
     path: PathBuf,
 }
 
@@ -257,11 +263,27 @@ impl Harness {
                 .unwrap()
                 .as_nanos()
         ));
+        let harness = Self::open(path, script).await;
+        harness.levels.upsert_level(&level()).await.unwrap();
+        harness.put(&order("o-1", BASE_ID)).await;
+        harness
+    }
+
+    /// Closes the database and opens the very same file again with fresh fakes.
+    ///
+    /// This stands in for a restart, so nothing is seeded: the level and the
+    /// order are already on disk. Migrations are idempotent, so replaying them
+    /// on reopen is safe.
+    pub async fn reopen(self, script: Script) -> Self {
+        let path = self.path.clone();
+        drop(self);
+        Self::open(path, script).await
+    }
+
+    async fn open(path: PathBuf, script: Script) -> Self {
         let pool = connect_pool(&path).await.unwrap();
-        let levels = SqliteLevelStore::new(pool.clone());
+        let levels = Arc::new(SqliteLevelStore::new(pool.clone()));
         let orders = Arc::new(SqliteOrderStore::new(pool));
-        levels.upsert_level(&level()).await.unwrap();
-        orders.upsert_order(&order("o-1", BASE_ID)).await.unwrap();
 
         let seen = Arc::new(Mutex::new(Vec::new()));
         let spy = Spy {
@@ -279,22 +301,26 @@ impl Harness {
             receipts: script.receipts,
             receipt_calls: AtomicUsize::new(0),
             broadcasts: AtomicUsize::new(0),
+            sent: Mutex::new(Vec::new()),
             broadcast_fails: script.broadcast_fails,
+        });
+        let signer = Arc::new(FakeSigner {
+            spy,
+            signatures: AtomicUsize::new(0),
         });
         let deps = ExecDeps {
             venues: vec![venue.clone()],
             chains: HashMap::from([(BASE_ID, chain.clone() as Arc<dyn ChainClient>)]),
-            signer: Arc::new(FakeSigner {
-                spy,
-                signatures: AtomicUsize::new(0),
-            }),
+            signer: signer.clone(),
         };
         Self {
+            levels,
             orders,
             deps,
             seen,
             venue,
             chain,
+            signer,
             path,
         }
     }
@@ -330,6 +356,15 @@ impl Harness {
 
     pub fn steps_calls(&self) -> usize {
         self.venue.steps_calls.load(Ordering::SeqCst)
+    }
+
+    pub fn signatures(&self) -> usize {
+        self.signer.signatures.load(Ordering::SeqCst)
+    }
+
+    /// Raw bytes of every broadcast, in call order.
+    pub fn sent(&self) -> Vec<String> {
+        self.chain.sent.lock().unwrap().clone()
     }
 
     pub fn cleanup(self) {

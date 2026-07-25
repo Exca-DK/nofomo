@@ -7,7 +7,7 @@ use tempo_agentic_domain::ExecutionPlan;
 use tempo_agentic_domain::VenueName;
 use tempo_agentic_price::{PricePair, PriceTick};
 use tempo_agentic_strategy::{Level, Order, OrderState, Side};
-use tempo_agentic_trigger::{TokenResolver, fired_levels};
+use tempo_agentic_trigger::{TokenResolver, cooling_down, fired_levels};
 
 const BASE_ID: u64 = 8453;
 const ETHEREUM_ID: u64 = 1;
@@ -266,4 +266,45 @@ fn one_tick_can_fire_several_levels() {
         fired_ids(&levels, &tick(BASE_ID, WETH_BASE, 2_400.0)),
         ["l-1", "l-2"]
     );
+}
+
+// `fired_levels` deliberately lets a failed order re-arm its level, so this rest
+// is the only thing between a reverting swap and a fresh quote on every tick.
+// Orders here are created at second 1 and the rest lasts a minute.
+#[test]
+fn a_level_that_just_acted_has_to_rest() {
+    let just_failed = [order(
+        "l-1",
+        OrderState::Failed {
+            tx_hash: None,
+            reason: "reverted".into(),
+        },
+    )];
+
+    assert!(cooling_down("l-1", &just_failed, 30));
+    assert!(
+        !cooling_down("l-1", &just_failed, 61),
+        "the rest has to end"
+    );
+    assert!(
+        !cooling_down("l-2", &just_failed, 30),
+        "one level's history must not silence another"
+    );
+    assert!(
+        !cooling_down("l-1", &[], 30),
+        "a level that never acted is free to act"
+    );
+}
+
+// The status is not consulted and does not need to be: anything other than a
+// failure already blocks the level through is_spent.
+#[test]
+fn the_rest_counts_any_attempt_not_just_failures() {
+    let filled = [order(
+        "l-1",
+        OrderState::Filled {
+            tx_hash: "0xabc".into(),
+        },
+    )];
+    assert!(cooling_down("l-1", &filled, 30));
 }

@@ -113,7 +113,7 @@ fn status_projects_every_state() {
         (
             OrderState::SwapQuarantined {
                 amount_in,
-                withdraw_action_id: "a".into(),
+                tx_hash: Some("0xabc".into()),
                 reason: "boom".into(),
             },
             OrderStatus::Quarantined,
@@ -143,7 +143,7 @@ fn only_settled_states_are_terminal() {
     assert!(
         with_state(OrderState::SwapQuarantined {
             amount_in,
-            withdraw_action_id: "a".into(),
+            tx_hash: Some("0xabc".into()),
             reason: "boom".into()
         })
         .is_terminal()

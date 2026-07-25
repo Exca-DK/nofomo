@@ -82,11 +82,13 @@ pub enum OrderState {
         tx_hash: Option<String>,
         reason: String,
     },
-    /// The swap exhausted its retries. Funds are parked as `token_in` and the
-    /// capital stays reserved until an operator intervenes.
+    /// The swap exhausted its retries. The level stays blocked until an operator
+    /// resolves it, so a rule that keeps failing cannot spend more gas.
     SwapQuarantined {
         amount_in: U256,
-        withdraw_action_id: String,
+        /// The transaction whose broadcast never confirmed as sent. An operator
+        /// needs it to check whether the bytes landed after all.
+        tx_hash: Option<String>,
         reason: String,
     },
 }
@@ -164,10 +166,10 @@ impl Order {
             | OrderState::Submitted { tx_hash, .. }
             | OrderState::Depositing { tx_hash, .. }
             | OrderState::Filled { tx_hash } => Some(tx_hash),
-            OrderState::Failed { tx_hash, .. } => tx_hash.as_deref(),
-            OrderState::Withdrawing { .. }
-            | OrderState::SwapReady { .. }
-            | OrderState::SwapQuarantined { .. } => None,
+            OrderState::Failed { tx_hash, .. } | OrderState::SwapQuarantined { tx_hash, .. } => {
+                tx_hash.as_deref()
+            }
+            OrderState::Withdrawing { .. } | OrderState::SwapReady { .. } => None,
         }
     }
 
