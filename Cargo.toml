@@ -19,11 +19,13 @@ tempo-agentic-mcp = { path = "crates/mcp" }
 tempo-agentic-vault = { path = "crates/vault" }
 tempo-agentic-strategy = { path = "crates/strategy" }
 tempo-agentic-chain = { path = "crates/chain" }
+tempo-agentic-price = { path = "crates/price" }
 
 alloy-primitives = { version = "1.6", features = ["serde"] }
 anyhow = "1"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive", "env"] }
+futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
 rmcp = { version = "2.2", features = ["server", "macros", "transport-io"] }
 schemars = "1"
