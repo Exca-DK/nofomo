@@ -4995,6 +4995,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-agentic-trigger"
+version = "0.2.0"
+dependencies = [
+ "alloy-primitives",
+ "serde_json",
+ "tempo-agentic-config",
+ "tempo-agentic-domain",
+ "tempo-agentic-price",
+ "tempo-agentic-strategy",
+ "tracing",
+]
+
+[[package]]
 name = "tempo-agentic-uniswap"
 version = "0.2.0"
 dependencies = [

@@ -21,6 +21,7 @@ tempo-agentic-strategy = { path = "crates/strategy" }
 tempo-agentic-chain = { path = "crates/chain" }
 tempo-agentic-price = { path = "crates/price" }
 tempo-agentic-price-dexpaprika = { path = "crates/price-dexpaprika" }
+tempo-agentic-trigger = { path = "crates/trigger" }
 
 alloy-primitives = { version = "1.6", features = ["serde"] }
 anyhow = "1"
