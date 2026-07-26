@@ -39,7 +39,7 @@
         "name": "base",
         "chain_id": 8453,
         "rpc_url": "https://mainnet.base.org",
-        "graph_subgraph_id": "",
+        "graph_subgraph_id": "GqzP4Xaehti8KSfQmv3ZctFSjnSUYZ4En5NRsiTbvZpz",
         "tokens": {
           "WETH": {
             "address": "0x4200000000000000000000000000000000000006",

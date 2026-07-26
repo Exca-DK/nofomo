@@ -4,8 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use tempo_agentic_domain::{
-    ChainClient, ChainId, ExecutionPlan, ReceiptStatus, SignedEvmTx, SignedSuiTx, SignedTx, Signer,
-    TradeVenue,
+    ChainClient, ChainId, DryRun, ExecutionPlan, ReceiptStatus, SignedEvmTx, SignedSuiTx, SignedTx,
+    Signer, TradeVenue,
 };
 use tempo_agentic_strategy::{Order, OrderState};
 
@@ -43,13 +43,17 @@ pub async fn perform(deps: &ExecDeps, order: &Order, action: Action) -> Outcome 
             Ok(outcome) => outcome,
             Err(error) => failed(error),
         },
-        Action::Broadcast { tx_hash, .. } if !deps.allow_broadcast => {
+        Action::Broadcast { signed_tx, tx_hash } if !deps.allow_broadcast => {
+            let dry_run = dry_run(deps, order, &signed_tx, &tx_hash).await;
             tracing::warn!(
                 order = %order.id,
                 tx_hash,
+                dry_run = %dry_run.note(),
                 "broadcast blocked; the transaction is signed but stays here"
             );
-            Outcome::BroadcastBlocked
+            Outcome::BroadcastBlocked {
+                note: dry_run.note(),
+            }
         }
         Action::Broadcast { signed_tx, tx_hash } => {
             match broadcast(deps, order, &signed_tx, &tx_hash).await {
@@ -86,6 +90,23 @@ async fn sign(deps: &ExecDeps, order: &Order) -> Result<Outcome> {
         signed_tx: signed.to_wire()?,
         tx_hash: signed.hash(),
     })
+}
+
+// A run that sends nothing still learns whether the transaction would have worked.
+// Reaching the node is best-effort here: nothing is at stake, so a failure to ask
+// must not read as a transaction the node rejected.
+async fn dry_run(deps: &ExecDeps, order: &Order, signed_tx: &str, tx_hash: &str) -> DryRun {
+    let attempt = async {
+        let signed = restore_signed(&order.plan, signed_tx, tx_hash)?;
+        deps.chain(&order.plan)?.dry_run(&signed).await
+    };
+    match attempt.await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            tracing::warn!(order = %order.id, %error, "cannot dry-run the blocked transaction");
+            DryRun::Unsupported
+        }
+    }
 }
 
 async fn broadcast(

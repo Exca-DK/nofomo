@@ -1,4 +1,3 @@
-use std::collections::{HashMap, VecDeque};
 use std::io::{self, Stdout};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -13,19 +12,24 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols;
 use ratatui::widgets::{
-    Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Sparkline, Table,
+    Axis, Block, Borders, Cell, Chart, Dataset, GraphType, List, ListItem, ListState, Paragraph,
+    Row, Table,
 };
 use ratatui::{Frame, text::Line};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
+use tempo_agentic_domain::format_units_string;
 use tempo_agentic_mcp::manifest_path;
+use tokio::task::JoinHandle;
 
 use crate::admin_client::Endpoint;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
+const MARKET_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(2);
-const HISTORY_LIMIT: usize = 120;
+const MARKET_HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Attaches to the daemon without opening its database or loading wallet configuration.
 pub async fn run(config_path: &str) -> Result<()> {
@@ -34,8 +38,10 @@ pub async fn run(config_path: &str) -> Result<()> {
         .map_err(|_| anyhow!("daemon is not running"))?;
     let mut terminal = TerminalGuard::new()?;
     let mut next_poll = Instant::now() + POLL_INTERVAL;
+    let mut next_market = Instant::now();
 
     loop {
+        client.finish_market_refresh().await;
         terminal
             .terminal
             .draw(|frame| render(frame, &client.state))?;
@@ -44,13 +50,21 @@ pub async fn run(config_path: &str) -> Result<()> {
         {
             match client.state.handle_key(key) {
                 InputAction::Quit => break,
-                InputAction::Refresh => next_poll = Instant::now(),
+                InputAction::Refresh => {
+                    next_poll = Instant::now();
+                    next_market = Instant::now();
+                }
+                InputAction::MarketChanged => next_market = Instant::now(),
                 InputAction::Continue => {}
             }
         }
         if Instant::now() >= next_poll {
             client.refresh().await;
             next_poll = Instant::now() + POLL_INTERVAL;
+        }
+        if Instant::now() >= next_market || client.state.market_dirty {
+            client.start_market_refresh();
+            next_market = Instant::now() + MARKET_INTERVAL;
         }
     }
     Ok(())
@@ -89,10 +103,12 @@ impl Drop for TerminalGuard {
 
 struct DashboardClient {
     http: Client,
+    market_http: Client,
     manifest: PathBuf,
     endpoint: Endpoint,
     reload_manifest: bool,
     state: AppState,
+    market_request: Option<JoinHandle<(String, Result<MarketChartView>)>>,
 }
 
 impl DashboardClient {
@@ -101,15 +117,18 @@ impl DashboardClient {
         let manifest = manifest_path(&database);
         let endpoint = Endpoint::read(&manifest)?;
         let http = Client::builder().timeout(HTTP_TIMEOUT).build()?;
+        let market_http = Client::builder().timeout(MARKET_HTTP_TIMEOUT).build()?;
         let snapshot = endpoint.fetch(&http).await?;
         let mut state = AppState::default();
         state.apply(snapshot);
         Ok(Self {
             http,
+            market_http,
             manifest,
             endpoint,
             reload_manifest: false,
             state,
+            market_request: None,
         })
     }
 
@@ -134,6 +153,54 @@ impl DashboardClient {
             }
         }
     }
+
+    fn start_market_refresh(&mut self) {
+        let Some(strategy_id) = self.state.selected_strategy.clone() else {
+            self.state.market_dirty = false;
+            self.state.market_loading = false;
+            return;
+        };
+        if self
+            .market_request
+            .as_ref()
+            .is_some_and(|request| !request.is_finished())
+            && !self.state.market_dirty
+        {
+            return;
+        }
+        if let Some(request) = self.market_request.take() {
+            request.abort();
+        }
+        self.state.market_dirty = false;
+        self.state.market_loading = true;
+        let endpoint = self.endpoint.clone();
+        let http = self.market_http.clone();
+        let request_id = strategy_id.clone();
+        self.market_request = Some(tokio::spawn(async move {
+            let result = endpoint.fetch_market(&http, &request_id).await;
+            (request_id, result)
+        }));
+    }
+
+    async fn finish_market_refresh(&mut self) {
+        let Some(request) = self.market_request.as_ref() else {
+            return;
+        };
+        if !request.is_finished() {
+            return;
+        }
+        let request = self
+            .market_request
+            .take()
+            .expect("finished market request still exists");
+        match request.await {
+            Ok((strategy_id, result)) => self.state.apply_market(&strategy_id, result),
+            Err(error) if error.is_cancelled() => {}
+            Err(error) => self
+                .state
+                .apply_market_error(format!("market request task failed: {error}")),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -141,7 +208,7 @@ struct DatabaseLocator {
     state_db_path: Option<PathBuf>,
 }
 
-fn locate_database(config_path: &Path) -> Result<PathBuf> {
+pub(crate) fn locate_database(config_path: &Path) -> Result<PathBuf> {
     let raw = std::fs::read_to_string(config_path)
         .with_context(|| format!("cannot read config {}", config_path.display()))?;
     let locator: DatabaseLocator = serde_json::from_str(&raw)
@@ -173,6 +240,27 @@ impl Endpoint {
             .json()
             .await
             .context("invalid dashboard response")
+    }
+
+    async fn fetch_market(&self, http: &Client, strategy_id: &str) -> Result<MarketChartView> {
+        let response = http
+            .post(self.url.join("dashboard/market")?)
+            .bearer_auth(&self.token)
+            .json(&serde_json::json!({ "strategy_id": strategy_id }))
+            .send()
+            .await
+            .context("market request failed")?;
+        if response.status() == StatusCode::UNAUTHORIZED {
+            bail!("dashboard authentication expired");
+        }
+        if !response.status().is_success() {
+            let status = response.status();
+            let body: ErrorResponse = response.json().await.unwrap_or_else(|_| ErrorResponse {
+                error: "market data is unavailable".into(),
+            });
+            bail!("{status}: {}", body.error);
+        }
+        response.json().await.context("invalid market response")
     }
 }
 
@@ -206,6 +294,8 @@ struct LevelView {
     token_out: String,
     trigger_price_usd: f64,
     price_pair: FeedPair,
+    amount: String,
+    amount_decimals: u8,
     runtime_state: String,
 }
 
@@ -245,12 +335,60 @@ struct FeedErrorView {
     message: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct MarketChartView {
+    strategy_id: String,
+    chain: String,
+    base_token: String,
+    quote_token: String,
+    generated_at: i64,
+    indexed_at: Option<i64>,
+    pool: MarketPoolView,
+    prices: Vec<PriceCandleView>,
+    liquidity: Vec<LiquidityPointView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct MarketPoolView {
+    id: String,
+    fee_tier: String,
+    tvl_usd: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct PriceCandleView {
+    started_at: i64,
+    open_usd: String,
+    high_usd: String,
+    low_usd: String,
+    close_usd: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct LiquidityPointView {
+    price_usd: String,
+    active_liquidity: String,
+}
+
+#[derive(Deserialize)]
+struct ErrorResponse {
+    error: String,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum Panel {
     #[default]
     Strategies,
     Levels,
+    Market,
     Executions,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum ChartMode {
+    #[default]
+    Price,
+    Liquidity,
 }
 
 #[derive(Default)]
@@ -258,25 +396,20 @@ struct AppState {
     snapshot: Option<DashboardSnapshot>,
     selected_strategy: Option<String>,
     selected_level: Option<String>,
-    histories: HashMap<FeedPair, VecDeque<TickView>>,
     disconnected: bool,
     connection_error: Option<String>,
     panel: Panel,
+    chart_mode: ChartMode,
+    market: Option<MarketChartView>,
+    market_loading: bool,
+    market_stale: bool,
+    market_error: Option<String>,
+    market_dirty: bool,
 }
 
 impl AppState {
     fn apply(&mut self, snapshot: DashboardSnapshot) {
-        for feed in &snapshot.feeds {
-            if let Some(tick) = &feed.last_tick {
-                let history = self.histories.entry(feed.pair.clone()).or_default();
-                if history.back().map(|old| old.published_at) != Some(tick.published_at) {
-                    if history.len() == HISTORY_LIMIT {
-                        history.pop_front();
-                    }
-                    history.push_back(tick.clone());
-                }
-            }
-        }
+        let old_strategy = self.selected_strategy.clone();
         self.selected_strategy = selected_id(
             self.selected_strategy.as_deref(),
             snapshot
@@ -294,6 +427,12 @@ impl AppState {
                 })
                 .map(|level| level.id.as_str()),
         );
+        if self.selected_strategy != old_strategy {
+            self.market = None;
+            self.market_error = None;
+            self.market_stale = false;
+            self.market_dirty = true;
+        }
         self.snapshot = Some(snapshot);
         self.disconnected = false;
         self.connection_error = None;
@@ -302,6 +441,27 @@ impl AppState {
     fn disconnect(&mut self, error: String) {
         self.disconnected = true;
         self.connection_error = Some(error);
+    }
+
+    fn apply_market(&mut self, strategy_id: &str, result: Result<MarketChartView>) {
+        if self.selected_strategy.as_deref() != Some(strategy_id) {
+            return;
+        }
+        self.market_loading = false;
+        match result {
+            Ok(market) => {
+                self.market = Some(market);
+                self.market_stale = false;
+                self.market_error = None;
+            }
+            Err(error) => self.apply_market_error(error.to_string()),
+        }
+    }
+
+    fn apply_market_error(&mut self, error: String) {
+        self.market_loading = false;
+        self.market_stale = self.market.is_some();
+        self.market_error = Some(error);
     }
 
     fn selected_feed(&self) -> Option<&FeedView> {
@@ -322,30 +482,45 @@ impl AppState {
         }
         match key.code {
             KeyCode::Char('r') => InputAction::Refresh,
+            KeyCode::Char('l') => {
+                self.chart_mode = match self.chart_mode {
+                    ChartMode::Price => ChartMode::Liquidity,
+                    ChartMode::Liquidity => ChartMode::Price,
+                };
+                InputAction::Continue
+            }
             KeyCode::Tab => {
                 self.panel = match self.panel {
                     Panel::Strategies => Panel::Levels,
-                    Panel::Levels => Panel::Executions,
+                    Panel::Levels => Panel::Market,
+                    Panel::Market => Panel::Executions,
                     Panel::Executions => Panel::Strategies,
                 };
                 InputAction::Continue
             }
             KeyCode::Up => {
-                self.move_selection(-1);
-                InputAction::Continue
+                if self.move_selection(-1) {
+                    InputAction::MarketChanged
+                } else {
+                    InputAction::Continue
+                }
             }
             KeyCode::Down => {
-                self.move_selection(1);
-                InputAction::Continue
+                if self.move_selection(1) {
+                    InputAction::MarketChanged
+                } else {
+                    InputAction::Continue
+                }
             }
             _ => InputAction::Continue,
         }
     }
 
-    fn move_selection(&mut self, delta: isize) {
+    fn move_selection(&mut self, delta: isize) -> bool {
         let Some(snapshot) = &self.snapshot else {
-            return;
+            return false;
         };
+        let old_strategy = self.selected_strategy.clone();
         match self.panel {
             Panel::Strategies => {
                 self.selected_strategy = move_id(
@@ -380,7 +555,16 @@ impl AppState {
                     delta,
                 );
             }
-            Panel::Executions => {}
+            Panel::Market | Panel::Executions => {}
+        }
+        if self.selected_strategy != old_strategy {
+            self.market = None;
+            self.market_error = None;
+            self.market_stale = false;
+            self.market_dirty = true;
+            true
+        } else {
+            false
         }
     }
 }
@@ -413,6 +597,7 @@ fn move_id<'a>(
 enum InputAction {
     Continue,
     Refresh,
+    MarketChanged,
     Quit,
 }
 
@@ -430,7 +615,7 @@ fn render(frame: &mut Frame<'_>, state: &AppState) {
         render_dashboard(frame, state, body);
     }
     frame.render_widget(
-        Paragraph::new("Tab panel · ↑↓ navigate · r refresh · q detach")
+        Paragraph::new("Tab panel · ↑↓ navigate · l price/liquidity · r refresh · q detach")
             .block(Block::default().borders(Borders::ALL)),
         footer,
     );
@@ -481,15 +666,14 @@ fn header_widget(state: &AppState) -> Paragraph<'static> {
 fn render_dashboard(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
     let [top, executions] =
         Layout::vertical([Constraint::Min(8), Constraint::Length(9)]).areas(area);
-    let [strategies, levels, detail] = Layout::horizontal([
-        Constraint::Percentage(24),
-        Constraint::Percentage(36),
-        Constraint::Percentage(40),
-    ])
-    .areas(top);
+    let [navigation, market] =
+        Layout::horizontal([Constraint::Percentage(36), Constraint::Percentage(64)]).areas(top);
+    let [strategies, levels] =
+        Layout::vertical([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .areas(navigation);
     render_strategies(frame, state, strategies);
     render_levels(frame, state, levels);
-    render_detail(frame, state, detail);
+    render_market(frame, state, market);
     render_executions(frame, state, executions);
 }
 
@@ -497,6 +681,7 @@ fn render_single_panel(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
     match state.panel {
         Panel::Strategies => render_strategies(frame, state, area),
         Panel::Levels => render_levels(frame, state, area),
+        Panel::Market => render_market(frame, state, area),
         Panel::Executions => render_executions(frame, state, area),
     }
 }
@@ -550,8 +735,13 @@ fn render_levels(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
         .iter()
         .map(|level| {
             ListItem::new(format!(
-                "{} {} ${:.4} [{}]",
-                level.id, level.side, level.trigger_price_usd, level.runtime_state
+                "{} {} ${:.4} · {} {} [{}]",
+                level.id,
+                level.side,
+                level.trigger_price_usd,
+                level_amount(level),
+                level.token_in,
+                level.runtime_state
             ))
         })
         .collect::<Vec<_>>();
@@ -571,7 +761,7 @@ fn render_levels(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
     );
 }
 
-fn render_detail(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
+fn render_market(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
     let [description, chart] =
         Layout::vertical([Constraint::Length(7), Constraint::Min(3)]).areas(area);
     let strategy = state.snapshot.as_ref().and_then(|snapshot| {
@@ -586,15 +776,16 @@ fn render_detail(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
             .iter()
             .find(|level| Some(level.id.as_str()) == state.selected_level.as_deref())
     });
-    let text = match (strategy, level) {
+    let mut text = match (strategy, level) {
         (Some(strategy), Some(level)) => format!(
-            "{} · {} · {}\n{}/{}\n{}: {} → {}\ntrigger ${:.4}",
+            "{} · {} · {}\n{}/{}\n{}: {} {} → {}\ntrigger ${:.4}",
             strategy.id,
             strategy.venue,
             strategy.chain,
             strategy.base_token,
             strategy.quote_token,
             level.side,
+            level_amount(level),
             level.token_in,
             level.token_out,
             level.trigger_price_usd,
@@ -605,6 +796,9 @@ fn render_detail(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
         ),
         _ => "no strategies".to_string(),
     };
+    if let Some(error) = &state.market_error {
+        text.push_str(&format!("\nmarket: {error}"));
+    }
     frame.render_widget(
         Paragraph::new(text).block(
             Block::default()
@@ -614,40 +808,295 @@ fn render_detail(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
         description,
     );
 
-    let values = state
-        .selected_feed()
-        .and_then(|feed| state.histories.get(&feed.pair))
-        .map(spark_values)
-        .unwrap_or_default();
+    let Some(market) = state
+        .market
+        .as_ref()
+        .filter(|market| Some(market.strategy_id.as_str()) == state.selected_strategy.as_deref())
+    else {
+        let message = if state.market_loading {
+            "loading market data from The Graph"
+        } else {
+            state
+                .market_error
+                .as_deref()
+                .unwrap_or("market data not loaded")
+        };
+        frame.render_widget(
+            Paragraph::new(message)
+                .style(Style::default().fg(if state.market_error.is_some() {
+                    Color::Red
+                } else {
+                    Color::Yellow
+                }))
+                .block(market_block(state, "Market")),
+            chart,
+        );
+        return;
+    };
+    match state.chart_mode {
+        ChartMode::Price => render_price_chart(frame, state, market, chart),
+        ChartMode::Liquidity => render_liquidity_chart(frame, state, market, chart),
+    }
+}
+
+fn render_price_chart(
+    frame: &mut Frame<'_>,
+    state: &AppState,
+    market: &MarketChartView,
+    area: Rect,
+) {
+    let prices = market
+        .prices
+        .iter()
+        .filter_map(|candle| {
+            decimal_f64(&candle.close_usd).map(|price| (candle.started_at as f64, price))
+        })
+        .collect::<Vec<_>>();
+    if prices.is_empty() {
+        render_market_message(
+            frame,
+            state,
+            area,
+            "The Graph returned no 24h price history",
+        );
+        return;
+    }
+    let x_bounds = padded_bounds(prices.iter().map(|point| point.0), 0.0);
+    let levels = active_levels(state);
+    let y_bounds = padded_bounds(
+        prices
+            .iter()
+            .map(|point| point.1)
+            .chain(levels.iter().map(|level| level.trigger_price_usd)),
+        0.02,
+    );
+    let level_lines = levels
+        .iter()
+        .map(|level| {
+            (
+                level_style(state, level),
+                vec![
+                    (x_bounds[0], level.trigger_price_usd),
+                    (x_bounds[1], level.trigger_price_usd),
+                ],
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut datasets = vec![
+        Dataset::default()
+            .name("The Graph close")
+            .marker(symbols::Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Color::Cyan)
+            .data(&prices),
+    ];
+    datasets.extend(level_lines.iter().map(|(style, points)| {
+        Dataset::default()
+            .marker(symbols::Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(*style)
+            .data(points)
+    }));
+    let title = format!(
+        "Price · 24h · {} levels{}",
+        levels.len(),
+        market_suffix(state, market)
+    );
     frame.render_widget(
-        Sparkline::default().data(&values).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Session price history"),
-        ),
-        chart,
+        Chart::new(datasets)
+            .block(market_block(state, title))
+            .x_axis(
+                Axis::default()
+                    .title("time")
+                    .bounds(x_bounds)
+                    .labels(["-24h", "now"]),
+            )
+            .y_axis(Axis::default().title("USD").bounds(y_bounds).labels([
+                format!("${:.4}", y_bounds[0]),
+                format!("${:.4}", y_bounds[1]),
+            ])),
+        area,
     );
 }
 
-fn spark_values(history: &VecDeque<TickView>) -> Vec<u64> {
-    let min = history
+fn render_liquidity_chart(
+    frame: &mut Frame<'_>,
+    state: &AppState,
+    market: &MarketChartView,
+    area: Rect,
+) {
+    let raw = market
+        .liquidity
         .iter()
-        .map(|tick| tick.price_usd)
-        .fold(f64::INFINITY, f64::min);
-    let max = history
-        .iter()
-        .map(|tick| tick.price_usd)
-        .fold(f64::NEG_INFINITY, f64::max);
-    history
-        .iter()
-        .map(|tick| {
-            if max > min {
-                ((tick.price_usd - min) / (max - min) * 100.0) as u64
-            } else {
-                50
-            }
+        .filter_map(|point| {
+            Some((
+                decimal_f64(&point.price_usd)?,
+                decimal_f64(&point.active_liquidity)?,
+            ))
         })
-        .collect()
+        .collect::<Vec<_>>();
+    let maximum = raw.iter().map(|point| point.1).fold(0.0, f64::max);
+    if raw.is_empty() || maximum <= 0.0 {
+        render_market_message(frame, state, area, "The Graph returned no active liquidity");
+        return;
+    }
+    let points = raw
+        .iter()
+        .map(|(price, liquidity)| (*price, liquidity / maximum * 100.0))
+        .collect::<Vec<_>>();
+    let levels = active_levels(state);
+    let x_bounds = padded_bounds(
+        points
+            .iter()
+            .map(|point| point.0)
+            .chain(levels.iter().map(|level| level.trigger_price_usd)),
+        0.02,
+    );
+    let level_lines = levels
+        .iter()
+        .map(|level| {
+            (
+                level_style(state, level),
+                vec![
+                    (level.trigger_price_usd, 0.0),
+                    (level.trigger_price_usd, 100.0),
+                ],
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut datasets = vec![
+        Dataset::default()
+            .name("active liquidity")
+            .marker(symbols::Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Color::Magenta)
+            .data(&points),
+    ];
+    datasets.extend(level_lines.iter().map(|(style, points)| {
+        Dataset::default()
+            .marker(symbols::Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(*style)
+            .data(points)
+    }));
+    let title = format!(
+        "Liquidity · pool {} · fee {} · TVL ${}{}",
+        short_id(&market.pool.id),
+        market.pool.fee_tier,
+        market.pool.tvl_usd,
+        market_suffix(state, market)
+    );
+    frame.render_widget(
+        Chart::new(datasets)
+            .block(market_block(state, title))
+            .x_axis(Axis::default().title("price USD").bounds(x_bounds).labels([
+                format!("${:.4}", x_bounds[0]),
+                format!("${:.4}", x_bounds[1]),
+            ]))
+            .y_axis(
+                Axis::default()
+                    .title("relative")
+                    .bounds([0.0, 100.0])
+                    .labels(["0%", "100%"]),
+            ),
+        area,
+    );
+}
+
+fn render_market_message(frame: &mut Frame<'_>, state: &AppState, area: Rect, message: &str) {
+    frame.render_widget(
+        Paragraph::new(message)
+            .style(Style::default().fg(Color::Yellow))
+            .block(market_block(state, "Market")),
+        area,
+    );
+}
+
+fn active_levels(state: &AppState) -> Vec<&LevelView> {
+    state
+        .snapshot
+        .as_ref()
+        .map(|snapshot| {
+            snapshot
+                .levels
+                .iter()
+                .filter(|level| {
+                    Some(level.strategy_id.as_str()) == state.selected_strategy.as_deref()
+                        && level.runtime_state != "filled"
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn level_style(state: &AppState, level: &LevelView) -> Style {
+    let color = if state.selected_level.as_deref() == Some(level.id.as_str()) {
+        Color::Yellow
+    } else if level.side == "buy" {
+        Color::Green
+    } else {
+        Color::Red
+    };
+    Style::default().fg(color)
+}
+
+fn level_amount(level: &LevelView) -> String {
+    format_units_string(&level.amount, level.amount_decimals)
+        .unwrap_or_else(|_| level.amount.clone())
+}
+
+fn decimal_f64(value: &str) -> Option<f64> {
+    let value = value.parse::<f64>().ok()?;
+    (value.is_finite() && value >= 0.0).then_some(value)
+}
+
+fn padded_bounds(values: impl Iterator<Item = f64>, padding: f64) -> [f64; 2] {
+    let (mut minimum, mut maximum) = values.fold(
+        (f64::INFINITY, f64::NEG_INFINITY),
+        |(minimum, maximum), value| (minimum.min(value), maximum.max(value)),
+    );
+    if !minimum.is_finite() || !maximum.is_finite() {
+        return [0.0, 1.0];
+    }
+    if maximum <= minimum {
+        let pad = minimum.abs().max(1.0) * 0.01;
+        minimum -= pad;
+        maximum += pad;
+    } else {
+        let pad = (maximum - minimum) * padding;
+        minimum -= pad;
+        maximum += pad;
+    }
+    [minimum, maximum]
+}
+
+fn short_id(id: &str) -> &str {
+    id.get(..id.len().min(10)).unwrap_or(id)
+}
+
+fn market_suffix(state: &AppState, market: &MarketChartView) -> String {
+    let freshness = if state.market_stale {
+        " · stale"
+    } else if state.market_loading {
+        " · refreshing"
+    } else {
+        ""
+    };
+    let indexed = market
+        .indexed_at
+        .map_or_else(String::new, |at| format!(" · indexed {at}"));
+    format!("{freshness}{indexed}")
+}
+
+fn market_block(state: &AppState, title: impl Into<Line<'static>>) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(if state.panel == Panel::Market {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default()
+        })
 }
 
 fn render_executions(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
@@ -767,33 +1216,57 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn market_request_uses_the_selected_strategy_and_bearer_token() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 8_192];
+            let count = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..count]);
+            assert!(request.starts_with("POST /dashboard/market "));
+            assert!(request.contains("authorization: Bearer token"));
+            assert!(request.contains(r#""strategy_id":"s-1""#));
+            let body = serde_json::to_vec(&market("s-1")).unwrap();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(&body).await.unwrap();
+        });
+        let endpoint = Endpoint {
+            url: format!("http://{address}/").parse().unwrap(),
+            token: "token".into(),
+        };
+
+        let response = endpoint.fetch_market(&Client::new(), "s-1").await.unwrap();
+
+        assert_eq!(response.strategy_id, "s-1");
+        server.await.unwrap();
+    }
+
     #[test]
-    fn history_is_bounded_deduplicated_and_selection_survives_reordering() {
+    fn selection_survives_reordering_and_a_market_change_is_marked_dirty() {
         let mut state = AppState::default();
         let mut snapshot = snapshot(0);
         state.apply(snapshot.clone());
+        state.market_dirty = false;
         state.selected_strategy = Some("s-2".into());
         state.selected_level = Some("l-2".into());
-        for published_at in 0..HISTORY_LIMIT as i64 + 10 {
-            snapshot.generated_at = published_at;
-            snapshot.feeds[0].last_tick = Some(TickView {
-                price_usd: 100.0 + published_at as f64,
-                published_at,
-            });
-            state.apply(snapshot.clone());
-            state.apply(snapshot.clone());
-        }
         snapshot.strategies.reverse();
         snapshot.levels.reverse();
         state.apply(snapshot);
 
-        let history = &state.histories[&FeedPair {
-            chain_id: 8453,
-            token_address: "0xbase".into(),
-        }];
-        assert_eq!(history.len(), HISTORY_LIMIT);
         assert_eq!(state.selected_strategy.as_deref(), Some("s-2"));
         assert_eq!(state.selected_level.as_deref(), Some("l-2"));
+        state.panel = Panel::Strategies;
+        assert_eq!(
+            state.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            InputAction::MarketChanged
+        );
+        assert!(state.market_dirty);
     }
 
     #[test]
@@ -801,7 +1274,10 @@ mod tests {
         let mut state = AppState::default();
         state.apply(snapshot(1));
         assert_eq!(state.selected_strategy.as_deref(), Some("s-1"));
-        state.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(
+            state.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            InputAction::MarketChanged
+        );
         assert_eq!(state.selected_strategy.as_deref(), Some("s-2"));
         assert_eq!(
             state.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
@@ -814,7 +1290,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_level_uses_its_own_feed_and_history() {
+    fn selected_level_uses_its_own_feed_and_exact_amount() {
         let mut state = AppState::default();
         state.apply(snapshot(1));
         state.selected_strategy = Some("s-2".into());
@@ -822,14 +1298,33 @@ mod tests {
 
         let feed = state.selected_feed().unwrap();
         assert_eq!(feed.pair.token_address, "0xbtc");
-        assert_eq!(
-            state.histories[&feed.pair].back().unwrap().price_usd,
-            90_010.0
-        );
         let text = render_text(&state, 140, 30);
         assert!(text.contains("$90010.0000"));
         assert!(text.contains("feed degraded"));
+        assert!(text.contains("1.25 WBTC"));
         assert!(!text.contains("$3010.0000"));
+    }
+
+    #[test]
+    fn toggles_between_price_and_liquidity_for_the_selected_market() {
+        let mut state = AppState::default();
+        state.apply(snapshot(1));
+        state.market = Some(market("s-1"));
+        state.market_dirty = false;
+
+        let price = render_text(&state, 140, 30);
+        assert!(price.contains("Price"));
+        assert!(price.contains("24h"));
+
+        state.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+        let liquidity = render_text(&state, 140, 30);
+        assert!(liquidity.contains("Liquidity"));
+        assert!(liquidity.contains("TVL $1000000"));
+
+        state.apply_market_error("The Graph is down".into());
+        let stale = render_text(&state, 140, 30);
+        assert!(stale.contains("stale"));
+        assert!(stale.contains("market: The Graph is down"));
     }
 
     #[test]
@@ -963,6 +1458,8 @@ mod tests {
                         chain_id: 8453,
                         token_address: "0xbase".into(),
                     },
+                    amount: "2500000".into(),
+                    amount_decimals: 6,
                     runtime_state: "armed".into(),
                 },
                 LevelView {
@@ -976,6 +1473,8 @@ mod tests {
                         chain_id: 8453,
                         token_address: "0xbtc".into(),
                     },
+                    amount: "125000000".into(),
+                    amount_decimals: 8,
                     runtime_state: "cooldown".into(),
                 },
             ],
@@ -1014,6 +1513,48 @@ mod tests {
                         category: "source_error".into(),
                         message: "price source reported an error".into(),
                     }),
+                },
+            ],
+        }
+    }
+
+    fn market(strategy_id: &str) -> MarketChartView {
+        MarketChartView {
+            strategy_id: strategy_id.into(),
+            chain: "base".into(),
+            base_token: "WETH".into(),
+            quote_token: "USDC".into(),
+            generated_at: 1,
+            indexed_at: Some(1),
+            pool: MarketPoolView {
+                id: "0xpool".into(),
+                fee_tier: "500".into(),
+                tvl_usd: "1000000".into(),
+            },
+            prices: vec![
+                PriceCandleView {
+                    started_at: 1,
+                    open_usd: "2990".into(),
+                    high_usd: "3010".into(),
+                    low_usd: "2980".into(),
+                    close_usd: "3000".into(),
+                },
+                PriceCandleView {
+                    started_at: 2,
+                    open_usd: "3000".into(),
+                    high_usd: "3020".into(),
+                    low_usd: "2990".into(),
+                    close_usd: "3010".into(),
+                },
+            ],
+            liquidity: vec![
+                LiquidityPointView {
+                    price_usd: "2900".into(),
+                    active_liquidity: "100".into(),
+                },
+                LiquidityPointView {
+                    price_usd: "3100".into(),
+                    active_liquidity: "200".into(),
                 },
             ],
         }

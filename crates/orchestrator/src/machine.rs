@@ -40,7 +40,10 @@ pub enum Outcome {
     /// An operator manually released a quarantined order.
     QuarantineResolved,
     /// The transaction was ready but sending it is not allowed.
-    BroadcastBlocked,
+    BroadcastBlocked {
+        /// What a dry run said about it, since nothing was sent.
+        note: String,
+    },
     /// No receipt turned up before the deadline.
     ReceiptTimedOut,
 }
@@ -193,9 +196,9 @@ pub fn apply(order: &Order, outcome: Outcome) -> Result<Option<OrderState>, Tran
         },
 
         // A blocked send leaves nothing to retry and frees the level.
-        (S::Broadcasting { .. }, O::BroadcastBlocked) => S::Failed {
+        (S::Broadcasting { .. }, O::BroadcastBlocked { note }) => S::Failed {
             tx_hash: None,
-            reason: "broadcast blocked; set MAINNET_SWAP=1 to allow".to_string(),
+            reason: format!("broadcast blocked; set MAINNET_SWAP=1 to allow ({note})"),
         },
 
         // Manual release uses `Failed` to free the level.
@@ -237,7 +240,7 @@ fn outcome_name(outcome: &Outcome) -> &'static str {
         Outcome::Reverted => "Reverted",
         Outcome::ExecFailed { .. } => "ExecFailed",
         Outcome::QuarantineResolved => "QuarantineResolved",
-        Outcome::BroadcastBlocked => "BroadcastBlocked",
+        Outcome::BroadcastBlocked { .. } => "BroadcastBlocked",
         Outcome::ReceiptTimedOut => "ReceiptTimedOut",
     }
 }

@@ -102,6 +102,40 @@ pub trait ChainClient: Send + Sync {
 
     /// Looks up the receipt without waiting for it.
     async fn confirmation(&self, tx_hash: &str) -> Result<ReceiptStatus>;
+
+    /// Asks the node to execute the transaction and throw the result away.
+    ///
+    /// Used when broadcasting is off, so a run that spends nothing still says
+    /// whether the transaction would have worked.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when the node cannot be reached. A transaction the
+    /// node rejects is a [`DryRun::Failed`], not an error.
+    async fn dry_run(&self, _signed: &SignedTx) -> Result<DryRun> {
+        Ok(DryRun::Unsupported)
+    }
+}
+
+/// What a node says about a transaction it was asked not to keep.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DryRun {
+    Succeeded,
+    /// The node executed it and it would have failed, with its reason.
+    Failed(String),
+    /// This chain client cannot simulate, so nothing was learned.
+    Unsupported,
+}
+
+impl DryRun {
+    /// One line for an order's failure reason.
+    pub fn note(&self) -> String {
+        match self {
+            Self::Succeeded => "dry run succeeded".to_string(),
+            Self::Failed(reason) => format!("dry run failed: {reason}"),
+            Self::Unsupported => "not simulated on this chain".to_string(),
+        }
+    }
 }
 
 /// EVM-only venue reads.

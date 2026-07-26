@@ -11,8 +11,8 @@ use sui_sdk_types::{
     TransactionExpiration, TransactionKind,
 };
 use tempo_agentic_domain::{
-    ChainClient, ChainId, ExecStep, ExecutionPlan, QuoteDraft, QuoteTradeRequest, ReceiptStatus,
-    SignedTx, Signer, TradeVenue, TxContext, UnsignedTx, VenueName,
+    ChainClient, ChainId, DryRun, ExecStep, ExecutionPlan, QuoteDraft, QuoteTradeRequest,
+    ReceiptStatus, SignedTx, Signer, TradeVenue, TxContext, UnsignedTx, VenueName,
 };
 use tempo_agentic_orchestrator::{ExecDeps, drive_order};
 use tempo_agentic_storage::{
@@ -115,6 +115,8 @@ struct FakeSuiNode {
     receipts: Vec<ReceiptStatus>,
     receipt_calls: AtomicUsize,
     sent: Mutex<Vec<String>>,
+    simulated: Mutex<Vec<String>>,
+    simulation: DryRun,
 }
 
 #[async_trait]
@@ -142,6 +144,14 @@ impl ChainClient for FakeSuiNode {
         let index = self.receipt_calls.fetch_add(1, Ordering::SeqCst);
         Ok(self.receipts[index.min(self.receipts.len() - 1)])
     }
+
+    async fn dry_run(&self, signed: &SignedTx) -> Result<DryRun> {
+        let SignedTx::Sui(signed) = signed else {
+            bail!("a Sui node was handed another family's transaction");
+        };
+        self.simulated.lock().unwrap().push(signed.digest());
+        Ok(self.simulation.clone())
+    }
 }
 
 struct Fixture {
@@ -156,6 +166,15 @@ struct Fixture {
 
 impl Fixture {
     async fn new(name: &str, receipts: Vec<ReceiptStatus>) -> Self {
+        Self::with_simulation(name, receipts, true, DryRun::Succeeded).await
+    }
+
+    async fn with_simulation(
+        name: &str,
+        receipts: Vec<ReceiptStatus>,
+        allow_broadcast: bool,
+        simulation: DryRun,
+    ) -> Self {
         let path = std::env::temp_dir().join(format!(
             "tempo-agentic-orchestrator-sui-{name}-{}-{}.db",
             std::process::id(),
@@ -196,13 +215,15 @@ impl Fixture {
             receipts,
             receipt_calls: AtomicUsize::new(0),
             sent: Mutex::new(Vec::new()),
+            simulated: Mutex::new(Vec::new()),
+            simulation: simulation.clone(),
         });
 
         let deps = ExecDeps {
             venues: vec![venue.clone()],
             chains: HashMap::from([(ChainId::Sui, node.clone() as Arc<dyn ChainClient>)]),
             signer: signer.clone(),
-            allow_broadcast: true,
+            allow_broadcast,
         };
 
         let fixture = Self {
@@ -301,5 +322,51 @@ async fn the_venue_is_handed_sui_chain_state() {
         }]
     );
 
+    fixture.cleanup();
+}
+
+// A run that spends nothing is the only chance to learn whether the transaction
+// would have worked, so it has to ask the node and record the answer.
+#[tokio::test]
+async fn a_blocked_run_dry_runs_and_keeps_what_the_node_said() {
+    let fixture = Fixture::with_simulation(
+        "dry-run-ok",
+        vec![ReceiptStatus::Success],
+        false,
+        DryRun::Succeeded,
+    )
+    .await;
+
+    let order = fixture.drive().await;
+
+    assert_eq!(fixture.node.simulated.lock().unwrap().len(), 1);
+    assert!(
+        fixture.node.sent.lock().unwrap().is_empty(),
+        "a blocked run must send nothing"
+    );
+    let OrderState::Failed { reason, tx_hash } = &order.state else {
+        panic!("a blocked broadcast ends the order: {:?}", order.state);
+    };
+    assert_eq!(tx_hash.as_deref(), None);
+    assert!(reason.contains("dry run succeeded"), "{reason}");
+    fixture.cleanup();
+}
+
+#[tokio::test]
+async fn a_dry_run_the_node_rejects_says_why() {
+    let fixture = Fixture::with_simulation(
+        "dry-run-bad",
+        vec![ReceiptStatus::Success],
+        false,
+        DryRun::Failed("InsufficientCoinBalance".into()),
+    )
+    .await;
+
+    let order = fixture.drive().await;
+
+    let OrderState::Failed { reason, .. } = &order.state else {
+        panic!("a blocked broadcast ends the order: {:?}", order.state);
+    };
+    assert!(reason.contains("InsufficientCoinBalance"), "{reason}");
     fixture.cleanup();
 }

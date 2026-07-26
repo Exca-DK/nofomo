@@ -6,7 +6,7 @@ Execution runs on Uniswap through its Trading API, and on Cetus for Sui CLMM poo
 
 ## Running
 
-`tempo-agentic-daemon` is the binary that trades. Broadcasting is off unless `MAINNET_SWAP=1` is set, so `run` quotes, builds and signs without sending anything.
+`tempo-agentic-daemon` is the binary that trades. Broadcasting is off unless `MAINNET_SWAP=1` is set, so `run` quotes, builds and signs without sending anything. On Sui such a run also asks the node to simulate the transaction it built, so a run that spends nothing still says whether the swap would have worked; the answer lands in the order's failure reason.
 
 Signing keys live in the files `keys.evm` and `keys.sui` point at, one raw key per file, owner-readable only. `bootstrap` creates whatever is missing; `keystore import` asks for an existing key without echoing it.
 
@@ -31,6 +31,19 @@ A strategy owns its market. Every level refers to one with `--strategy-id`: `buy
 `bootstrap` and `run` initialize the current schema only when the state database does not exist. There is no schema migration: if an older development database is rejected, remove the exact path named in the error manually and run `bootstrap` or `run` again. The daemon never deletes it for you.
 
 `strategy add`, `level add`, and `level rm` write straight into SQLite when nothing holds it. When `run` holds the database lock they call the daemon's own MCP tools instead, so a trading daemon never has to stop to be reconfigured. The daemon validates whatever it is asked to store, so the checks are the same either way.
+
+### OpenClaw
+
+`openclaw` prints the `mcp.servers.nofomo` entry for the running daemon, and `--write` merges it into `~/.openclaw/openclaw.json` without touching anything else in that file:
+
+```bash
+tempo-agentic-daemon openclaw
+tempo-agentic-daemon openclaw --write
+```
+
+The entry carries a `toolFilter` that exposes only authoring: `set_strategy` and `set_level`, plus `strategies`, `levels` and `status` so an agent can see what already exists and whether a rule it stores will trade for real. `delete_level` and `orders` stay out. Widen the list in `openclaw.rs` if an agent should do more than write rules.
+
+The daemon publishes a fresh port and token every start, so run this again after restarting it. The written file holds a bearer token and is kept owner-readable.
 
 `dashboard` requires a running daemon. It reconnects through the daemon manifest after connection or authentication failures and renders feed and level states as text (for example `live`, `stale`, `armed`, or `cooldown`). Press `q` or Ctrl-C to detach; trading continues in the daemon.
 

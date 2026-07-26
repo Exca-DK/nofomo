@@ -8,6 +8,8 @@ use rmcp::model::{ErrorData as McpError, Implementation, ServerCapabilities, Ser
 use rmcp::{Json, ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tempo_agentic_config::EvmConfig;
+use tempo_agentic_graph::{GraphClient, LiquidityPoint, MarketPool, PriceCandle};
 use tempo_agentic_price::{PricePair, PriceSource};
 use tempo_agentic_strategy::{
     DashboardStore, LevelStore, Order, OrderStore, Strategy, StrategyLevel, StrategyStore,
@@ -39,6 +41,48 @@ pub struct AdminHandler {
 pub struct DashboardDeps {
     pub store: Arc<dyn DashboardStore>,
     pub runtime: Arc<RuntimeStatus>,
+    /// Present when the daemon can serve Uniswap market charts.
+    pub market: Option<DashboardMarketDeps>,
+}
+
+#[derive(Clone)]
+/// Optional The Graph dependencies for the dashboard-only market endpoint.
+pub struct DashboardMarketDeps {
+    /// Authenticated gateway client shared with venue research.
+    pub graph: GraphClient,
+    /// Chain and token addresses used to resolve stored strategy symbols.
+    pub evm: EvmConfig,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct DashboardMarketView {
+    strategy_id: String,
+    chain: String,
+    base_token: String,
+    quote_token: String,
+    generated_at: i64,
+    indexed_at: Option<i64>,
+    pool: MarketPool,
+    prices: Vec<PriceCandle>,
+    liquidity: Vec<LiquidityPoint>,
+}
+
+pub(crate) enum DashboardMarketError {
+    NotFound,
+    Unsupported(String),
+    NoPool,
+    Unavailable(anyhow::Error),
+}
+
+impl DashboardMarketError {
+    pub(crate) fn message(&self) -> String {
+        match self {
+            Self::NotFound => "strategy does not exist".to_string(),
+            Self::Unsupported(message) => message.clone(),
+            Self::NoPool => "The Graph has no Uniswap v3 pool for this pair".to_string(),
+            Self::Unavailable(error) => error.to_string(),
+        }
+    }
 }
 
 impl AdminHandler {
@@ -97,6 +141,86 @@ impl AdminHandler {
             levels,
             orders,
             feeds: runtime.feeds,
+        })
+    }
+
+    pub(crate) async fn dashboard_market(
+        &self,
+        strategy_id: &str,
+    ) -> Result<DashboardMarketView, DashboardMarketError> {
+        let strategy = self
+            .strategies
+            .get_strategy(strategy_id)
+            .await
+            .map_err(DashboardMarketError::Unavailable)?
+            .ok_or(DashboardMarketError::NotFound)?;
+        if strategy.venue.as_str() != "uniswap" {
+            return Err(DashboardMarketError::Unsupported(
+                "The Graph market chart is available only for Uniswap/EVM strategies".into(),
+            ));
+        }
+        let market = self.dashboard.market.as_ref().ok_or_else(|| {
+            DashboardMarketError::Unsupported("The Graph market chart is not configured".into())
+        })?;
+        let chain = market
+            .evm
+            .chains
+            .iter()
+            .find(|chain| chain.name == strategy.chain)
+            .ok_or_else(|| {
+                DashboardMarketError::Unsupported(format!(
+                    "{} is not a configured EVM chain",
+                    strategy.chain
+                ))
+            })?;
+        if chain.graph_subgraph_id.trim().is_empty() {
+            return Err(DashboardMarketError::Unsupported(format!(
+                "{} has no configured Uniswap subgraph",
+                chain.name
+            )));
+        }
+        let orders = self
+            .orders
+            .list_orders()
+            .await
+            .map_err(DashboardMarketError::Unavailable)?;
+        let runtime = self.dashboard.runtime.snapshot();
+        let level_prices = self
+            .levels
+            .list_levels()
+            .await
+            .map_err(DashboardMarketError::Unavailable)?
+            .into_iter()
+            .filter(|entry| {
+                entry.strategy.id == strategy.id
+                    && !matches!(
+                        runtime.level_state(&entry.level.id, &orders),
+                        RuntimeLevelState::Filled
+                    )
+            })
+            .map(|entry| entry.level.trigger_price_usd.to_string())
+            .collect::<Vec<_>>();
+        let chart = market
+            .graph
+            .market_chart(
+                chain,
+                &strategy.base_token,
+                &strategy.quote_token,
+                &level_prices,
+            )
+            .await
+            .map_err(DashboardMarketError::Unavailable)?
+            .ok_or(DashboardMarketError::NoPool)?;
+        Ok(DashboardMarketView {
+            strategy_id: strategy.id,
+            chain: strategy.chain,
+            base_token: strategy.base_token,
+            quote_token: strategy.quote_token,
+            generated_at: runtime.generated_at,
+            indexed_at: chart.indexed_at,
+            pool: chart.pool,
+            prices: chart.prices,
+            liquidity: chart.liquidity,
         })
     }
 }

@@ -3,9 +3,9 @@ use async_trait::async_trait;
 use sui_rpc::Client;
 use sui_rpc::field::{FieldMask, FieldMaskUtil};
 use sui_rpc::proto::sui::rpc::v2::{
-    ExecuteTransactionRequest, GetEpochRequest, GetTransactionRequest,
+    ExecuteTransactionRequest, GetEpochRequest, GetTransactionRequest, SimulateTransactionRequest,
 };
-use tempo_agentic_domain::{ChainClient, ChainId, ReceiptStatus, SignedTx, TxContext};
+use tempo_agentic_domain::{ChainClient, ChainId, DryRun, ReceiptStatus, SignedTx, TxContext};
 
 /// Wallet-free Sui node client.
 pub struct SuiChainClient {
@@ -125,6 +125,40 @@ impl ChainClient for SuiChainClient {
             Some(false) => Ok(ReceiptStatus::Reverted),
             None => Ok(ReceiptStatus::Pending),
         }
+    }
+
+    async fn dry_run(&self, signed: &SignedTx) -> Result<DryRun> {
+        let SignedTx::Sui(signed) = signed else {
+            return Ok(DryRun::Unsupported);
+        };
+
+        // Simulation takes the transaction alone; the signature is not checked.
+        let mut request = SimulateTransactionRequest::default();
+        request.transaction = Some(signed.transaction.clone().into());
+        request.read_mask = Some(FieldMask::from_paths(["transaction.effects.status"]));
+
+        let response = self
+            .client()?
+            .execution_client()
+            .simulate_transaction(request)
+            .await
+            .context("failed to simulate the Sui transaction")?
+            .into_inner();
+
+        let status = response
+            .transaction
+            .and_then(|executed| executed.effects)
+            .and_then(|effects| effects.status);
+        Ok(match status {
+            Some(status) if status.success == Some(true) => DryRun::Succeeded,
+            Some(status) => DryRun::Failed(
+                status
+                    .error
+                    .and_then(|error| error.description)
+                    .unwrap_or_else(|| "the node gave no reason".to_string()),
+            ),
+            None => DryRun::Failed("the node returned no execution status".to_string()),
+        })
     }
 }
 

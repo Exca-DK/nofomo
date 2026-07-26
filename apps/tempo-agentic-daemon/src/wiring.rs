@@ -22,14 +22,13 @@ pub struct Wiring {
 /// Builds runtime dependencies from configuration.
 pub fn build(
     config: &Config,
+    graph: GraphClient,
     allow_broadcast: bool,
     levels: Arc<dyn LevelStore>,
     orders: Arc<dyn OrderStore>,
     tokens: Arc<TokenResolver>,
     runtime: Arc<RuntimeStatus>,
 ) -> Result<Wiring> {
-    let graph = GraphClient::new(&config.graph)?;
-
     // EVM clients also serve venue reads.
     let mut chains: HashMap<ChainId, Arc<dyn ChainClient>> = HashMap::new();
     let mut evm_nodes: HashMap<u64, Arc<dyn EvmNode>> = HashMap::new();

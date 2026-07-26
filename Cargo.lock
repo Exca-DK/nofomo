@@ -5160,11 +5160,14 @@ dependencies = [
 name = "tempo-agentic-graph"
 version = "0.2.0"
 dependencies = [
+ "alloy-primitives",
  "anyhow",
  "reqwest 0.12.28",
+ "serde",
  "serde_json",
  "tempo-agentic-config",
  "tempo-agentic-domain",
+ "tokio",
 ]
 
 [[package]]
@@ -5184,6 +5187,7 @@ dependencies = [
  "serde_json",
  "tempo-agentic-config",
  "tempo-agentic-domain",
+ "tempo-agentic-graph",
  "tempo-agentic-price",
  "tempo-agentic-price-dexpaprika",
  "tempo-agentic-storage",

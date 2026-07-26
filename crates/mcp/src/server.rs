@@ -13,10 +13,12 @@ use hyper_util::service::TowerToHyperService;
 use rand::Rng;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::{StreamableHttpServerConfig, StreamableHttpService};
+use serde::Deserialize;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
 use crate::AdminHandler;
+use crate::admin::DashboardMarketError;
 
 type AdminService = StreamableHttpService<AdminHandler, LocalSessionManager>;
 
@@ -107,6 +109,11 @@ async fn accept(
                     if request.method() == Method::GET && request.uri().path() == "/dashboard" {
                         return Ok(dashboard_response(&dashboard).await);
                     }
+                    if request.method() == Method::POST
+                        && request.uri().path() == "/dashboard/market"
+                    {
+                        return Ok(dashboard_market_response(&dashboard, request).await);
+                    }
                     inner.call(request).await
                 }
             });
@@ -117,6 +124,57 @@ async fn accept(
                 tracing::debug!(%error, "admin connection closed");
             }
         });
+    }
+}
+
+#[derive(Deserialize)]
+struct MarketRequest {
+    strategy_id: String,
+}
+
+async fn dashboard_market_response(
+    handler: &AdminHandler,
+    request: Request<Incoming>,
+) -> Response<BoxBody<Bytes, Infallible>> {
+    let body = match request.into_body().collect().await {
+        Ok(body) => {
+            let body = body.to_bytes();
+            if body.len() > 1_024 {
+                return error_response(StatusCode::PAYLOAD_TOO_LARGE, "request is too large");
+            }
+            body
+        }
+        Err(error) => {
+            tracing::debug!(%error, "cannot read dashboard market request");
+            return error_response(StatusCode::BAD_REQUEST, "request body is unreadable");
+        }
+    };
+    let request = match serde_json::from_slice::<MarketRequest>(&body) {
+        Ok(request) if !request.strategy_id.trim().is_empty() => request,
+        Ok(_) => return error_response(StatusCode::BAD_REQUEST, "strategy_id cannot be empty"),
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid market request"),
+    };
+    match handler.dashboard_market(&request.strategy_id).await {
+        Ok(market) => match serde_json::to_vec(&market) {
+            Ok(body) => response(StatusCode::OK, body),
+            Err(error) => {
+                tracing::warn!(%error, "cannot serialize dashboard market data");
+                error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "market data is unavailable",
+                )
+            }
+        },
+        Err(error) => {
+            let status = match &error {
+                DashboardMarketError::NotFound => StatusCode::NOT_FOUND,
+                DashboardMarketError::Unsupported(_) | DashboardMarketError::NoPool => {
+                    StatusCode::UNPROCESSABLE_ENTITY
+                }
+                DashboardMarketError::Unavailable(_) => StatusCode::BAD_GATEWAY,
+            };
+            error_response(status, &error.message())
+        }
     }
 }
 
@@ -140,6 +198,14 @@ async fn dashboard_response(handler: &AdminHandler) -> Response<BoxBody<Bytes, I
             )
         }
     }
+}
+
+fn error_response(status: StatusCode, message: &str) -> Response<BoxBody<Bytes, Infallible>> {
+    response(
+        status,
+        serde_json::to_vec(&serde_json::json!({ "error": message }))
+            .unwrap_or_else(|_| br#"{"error":"request failed"}"#.to_vec()),
+    )
 }
 
 fn response(status: StatusCode, body: Vec<u8>) -> Response<BoxBody<Bytes, Infallible>> {
