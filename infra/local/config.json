@@ -100,6 +100,10 @@
           "NVDA": {
             "address": "0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC",
             "decimals": 18
+          },
+          "CASHCAT": {
+            "address": "0x020bFC650A365f8bB26819DEaAbF3e21291018b4",
+            "decimals": 18
           }
         }
       }
