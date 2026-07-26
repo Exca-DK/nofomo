@@ -15,6 +15,7 @@ pub struct RegisteredToken {
     pub id: String,
     pub price_ref: Option<PricePair>,
     pub decimals: u8,
+    pub usd_peg: bool,
 }
 
 /// Maps configured tokens to venue and feed identifiers.
@@ -40,6 +41,7 @@ impl TokenResolver {
                             id: symbol.clone(),
                             price_ref: Some(PricePair::new(chain.chain_id, token.address.clone())),
                             decimals: token.decimals,
+                            usd_peg: token.usd_peg,
                         },
                     )
                 })
@@ -58,6 +60,7 @@ impl TokenResolver {
                         PricePair::new(reference.chain_id, reference.address.clone())
                     }),
                     decimals: coin.decimals,
+                    usd_peg: coin.usd_peg,
                 };
                 // Index both symbol and Move type.
                 coins.insert(lookup_key(&token.id), token.clone());

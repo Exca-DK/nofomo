@@ -34,6 +34,7 @@ fn evm(usdc_decimals: u8) -> EvmConfig {
                     EvmToken {
                         address: "0x4200000000000000000000000000000000000006".into(),
                         decimals: 18,
+                        usd_peg: false,
                     },
                 ),
                 (
@@ -41,6 +42,7 @@ fn evm(usdc_decimals: u8) -> EvmConfig {
                     EvmToken {
                         address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913".into(),
                         decimals: usdc_decimals,
+                        usd_peg: false,
                     },
                 ),
             ]),
@@ -48,8 +50,6 @@ fn evm(usdc_decimals: u8) -> EvmConfig {
     }
 }
 
-// Sui coins are named by symbol but travel as Move types, and hBTC is priced
-// off the same asset on a chain the feed actually indexes.
 fn sui() -> SuiConfig {
     SuiConfig {
         enabled: true,
@@ -64,6 +64,7 @@ fn sui() -> SuiConfig {
                         chain_id: 8453,
                         address: "0x1111111111111111111111111111111111111111".into(),
                     }),
+                    usd_peg: false,
                 },
             ),
             (
@@ -72,6 +73,7 @@ fn sui() -> SuiConfig {
                     coin_type: "0x2::sui::SUI".into(),
                     decimals: 9,
                     price_ref: None,
+                    usd_peg: false,
                 },
             ),
         ]),

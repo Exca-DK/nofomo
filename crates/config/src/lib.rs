@@ -15,6 +15,9 @@ pub struct Config {
     pub quote_ttl_seconds: u64,
     #[serde(default = "default_max_slippage_bps")]
     pub max_slippage_bps: u16,
+    /// Maximum quote/feed deviation in basis points.
+    #[serde(default = "default_max_quote_deviation_bps")]
+    pub max_quote_deviation_bps: u16,
     /// DexPaprika stream URL; pairs come from `evm.chains`.
     #[serde(default = "default_dexpaprika_url")]
     pub dexpaprika_stream_url: String,
@@ -75,6 +78,9 @@ pub struct EvmChain {
 pub struct EvmToken {
     pub address: String,
     pub decimals: u8,
+    /// True for a one-dollar peg.
+    #[serde(default)]
+    pub usd_peg: bool,
 }
 
 /// Configuration for Sui blockchain integration.
@@ -101,6 +107,9 @@ pub struct SuiCoin {
     /// Feed reference; optional when this is never the priced side.
     #[serde(default)]
     pub price_ref: Option<PriceRef>,
+    /// True for a one-dollar peg.
+    #[serde(default)]
+    pub usd_peg: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -144,6 +153,9 @@ impl Config {
         }
         if self.max_slippage_bps > 10_000 {
             bail!("max_slippage_bps must not exceed 10000");
+        }
+        if !(1..=10_000).contains(&self.max_quote_deviation_bps) {
+            bail!("max_quote_deviation_bps must be between 1 and 10000");
         }
         validate_https_url(&self.uniswap.api_url).context("Uniswap API URL")?;
         validate_https_url(&self.graph.gateway_url).context("The Graph Gateway URL")?;
@@ -368,6 +380,11 @@ fn default_min_graph_tvl() -> String {
 }
 
 fn default_max_slippage_bps() -> u16 {
+    500
+}
+
+// Default: 5%.
+fn default_max_quote_deviation_bps() -> u16 {
     500
 }
 

@@ -38,6 +38,8 @@ Direct `strategy add`, `level add`, and `level rm` are offline-only. If `run` ho
 
 A price belongs to the asset, not to the chain it sits on — arbitrage keeps them level. EVM tokens are quoted by their own address, while each entry in `sui.coins` names a `price_ref`: the same asset on a chain the feed does index. That is how a testnet coin no feed has ever heard of still gets a price. A coin used only as a strategy's quote leg can omit it, but then it cannot be the base token a strategy is watched on.
 
+Before an order is created, the venue's quote is checked against the price that fired the level and refused if it sits further away than `max_quote_deviation_bps` (5% by default). This catches what slippage cannot: `minimum_amount_out` is derived from the venue's own quote, so a bad route or a manipulated pool produces a self-consistent quote the daemon would otherwise sign. The check values the counter leg in dollars, so it needs `usd_peg: true` on the quote token — mark your stablecoins. An unpegged pair is logged as unchecked rather than silently trusted.
+
 ### Sui
 
 Strategies on Sui name coins by the symbols in `sui.coins` and need `--venue cetus`:

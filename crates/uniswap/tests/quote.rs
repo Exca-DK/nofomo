@@ -46,6 +46,7 @@ async fn venue(mock_uri: &str, key_env: &str) -> UniswapVenue {
         EvmToken {
             address: TOKEN_IN.to_string(),
             decimals: 18,
+            usd_peg: false,
         },
     );
     tokens.insert(
@@ -53,6 +54,7 @@ async fn venue(mock_uri: &str, key_env: &str) -> UniswapVenue {
         EvmToken {
             address: TOKEN_OUT.to_string(),
             decimals: 18,
+            usd_peg: false,
         },
     );
     let evm = EvmConfig {

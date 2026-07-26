@@ -20,6 +20,7 @@ fn token(address: &str, decimals: u8) -> EvmToken {
     EvmToken {
         address: address.to_string(),
         decimals,
+        usd_peg: false,
     }
 }
 
