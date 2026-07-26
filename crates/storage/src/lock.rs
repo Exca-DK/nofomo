@@ -4,25 +4,17 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-/// Exclusive claim on one database, held for as long as this value lives.
-///
-/// Two daemons on one database would quote the same levels side by side and
-/// start a second order for every rule that fires, so only one may run.
+/// Process-lifetime exclusive database claim.
 #[derive(Debug)]
 pub struct LockFile {
     path: PathBuf,
 }
 
 impl LockFile {
-    /// Claims `path` for this process.
-    ///
-    /// Returns an error if another process holds it, naming the pid inside so an
-    /// operator can tell a live daemon from a leftover. A crash that skips
-    /// `Drop` leaves the file behind and it has to be removed by hand.
+    /// Claims `path`, reporting any existing owner's PID.
     pub fn acquire(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        // `create_new` is a single atomic syscall, so two daemons racing to start
-        // cannot both win.
+        // Atomic creation lets only one racing daemon win.
         match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut file) => {
                 write!(file, "{}", std::process::id())

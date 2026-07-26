@@ -1,4 +1,3 @@
-/// god save me from the horrors of this file
 use anyhow::{Result, bail};
 use ethnum::U256;
 

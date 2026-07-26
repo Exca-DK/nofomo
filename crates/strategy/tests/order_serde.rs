@@ -63,6 +63,7 @@ fn every_state() -> Vec<OrderState> {
             amount_in: U256::from(1_000_000u64),
             tx_hash: "0xdeadbeef".into(),
             withdraw_action_id: None,
+            submitted_at: 1_700_000_042,
         },
         OrderState::Depositing {
             tx_hash: "0xdeadbeef".into(),
@@ -98,10 +99,28 @@ fn every_order_state_variant_round_trips_through_json() {
     }
 }
 
+// Old rows without `submitted_at` load as overdue.
+#[test]
+fn a_submitted_row_written_before_the_deadline_existed_still_loads() {
+    let older = json!({
+        "phase": "submitted",
+        "step": "swap",
+        "amount_in": "0xf4240",
+        "tx_hash": "0xdeadbeef",
+        "withdraw_action_id": null
+    });
+
+    let decoded: OrderState = serde_json::from_value(older).unwrap();
+
+    let OrderState::Submitted { submitted_at, .. } = decoded else {
+        panic!("expected a submitted state");
+    };
+    assert_eq!(submitted_at, 0);
+}
+
 #[test]
 fn every_order_state_variant_round_trips_through_a_json_value() {
-    // `crates/storage` stores the state column as a `serde_json::Value`, not
-    // a string, so that path is exercised separately from `to_string`.
+    // Exercise storage's JSON-value round trip.
     for state in every_state() {
         let order = with_state(state);
         let value = serde_json::to_value(&order).unwrap();

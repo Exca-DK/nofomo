@@ -11,13 +11,11 @@ async-trait.workspace = true
 ethnum = "1"
 prost-types = "0.14"
 serde_json.workspace = true
-sui-crypto = { git = "https://github.com/MystenLabs/sui-rust-sdk", version = "0.3.1", features = ["ed25519"] }
-sui-rpc = { git = "https://github.com/MystenLabs/sui-rust-sdk", version = "0.3.2" }
-sui-sdk-types = { git = "https://github.com/MystenLabs/sui-rust-sdk", version = "0.3.2" }
-sui-transaction-builder = { git = "https://github.com/MystenLabs/sui-rust-sdk", version = "0.3.2" }
+sui-rpc.workspace = true
+sui-sdk-types.workspace = true
+sui-transaction-builder.workspace = true
 tempo-agentic-config.workspace = true
 tempo-agentic-domain.workspace = true
-tempo-agentic-vault.workspace = true
 
 [lints]
 workspace = true

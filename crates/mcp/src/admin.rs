@@ -8,16 +8,14 @@ use rmcp::{Json, ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tempo_agentic_config::EvmConfig;
+use tempo_agentic_price::PriceSource;
 use tempo_agentic_strategy::{Level, LevelStore, Order, OrderStore};
 use tempo_agentic_trigger::{LevelDraft, validate_level};
 
 /// Orders returned when the caller does not say how many it wants.
 const DEFAULT_ORDER_LIMIT: usize = 50;
 
-/// Model Context Protocol handler for inspecting and steering a running daemon.
-///
-/// Reads and writes the same database the daemon works from, so everything here
-/// is about the live process rather than a private copy.
+/// MCP handler for the running daemon's live database.
 #[derive(Clone)]
 pub struct AdminHandler {
     levels: Arc<dyn LevelStore>,
@@ -25,6 +23,8 @@ pub struct AdminHandler {
     evm: EvmConfig,
     max_slippage_bps: u16,
     allow_broadcast: bool,
+    /// Checks price support before storing rules.
+    prices: Arc<dyn PriceSource>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -35,6 +35,7 @@ impl AdminHandler {
         evm: EvmConfig,
         max_slippage_bps: u16,
         allow_broadcast: bool,
+        prices: Arc<dyn PriceSource>,
     ) -> Self {
         Self {
             levels,
@@ -42,6 +43,7 @@ impl AdminHandler {
             evm,
             max_slippage_bps,
             allow_broadcast,
+            prices,
             tool_router: Self::tool_router(),
         }
     }
@@ -50,8 +52,7 @@ impl AdminHandler {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct DaemonStatus {
     pub version: String,
-    /// False means the daemon quotes, builds and signs but never sends. An agent
-    /// has to know this before it claims a rule will trade.
+    /// Whether the daemon may broadcast signed transactions.
     pub allow_broadcast: bool,
     pub levels: usize,
     /// Order counts by status: pending, submitted, filled, failed, quarantined.
@@ -73,10 +74,7 @@ pub struct LevelView {
     pub slippage_bps: u16,
 }
 
-/// An order as an operator needs to see it.
-///
-/// Deliberately not the stored [`Order`]: that carries the venue's raw quote
-/// blob, which is noise to a reader and can run to kilobytes.
+/// Operator-facing order without the stored raw quote.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct OrderView {
     pub id: String,
@@ -91,8 +89,7 @@ pub struct OrderView {
     pub created_at: i64,
 }
 
-/// MCP requires a tool's output schema to be rooted at an object, so the lists
-/// travel wrapped rather than bare.
+/// Object wrappers required by MCP output schemas.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct LevelList {
     pub levels: Vec<LevelView>,
@@ -154,8 +151,7 @@ fn order_view(order: &Order) -> OrderView {
     }
 }
 
-// Finer than `status`: an operator debugging a stuck order needs to know whether
-// it is waiting to be signed or waiting for a receipt.
+// Expose the exact phase for debugging stuck orders.
 fn phase(order: &Order) -> &'static str {
     use tempo_agentic_strategy::OrderState as S;
     match &order.state {
@@ -226,7 +222,13 @@ impl AdminHandler {
         &self,
         Parameters(draft): Parameters<LevelDraft>,
     ) -> Result<Json<LevelView>, McpError> {
-        let level = validate_level(&self.evm, self.max_slippage_bps, &draft).map_err(to_mcp)?;
+        let level = validate_level(
+            &self.evm,
+            self.max_slippage_bps,
+            self.prices.as_ref(),
+            &draft,
+        )
+        .map_err(to_mcp)?;
         self.levels.upsert_level(&level).await.map_err(to_mcp)?;
         Ok(Json(level_view(&level)))
     }

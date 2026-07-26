@@ -13,17 +13,14 @@ use hyper_util::service::TowerToHyperService;
 use rand::Rng;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::{StreamableHttpServerConfig, StreamableHttpService};
-use tempo_agentic_mcp::AdminHandler;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
+use crate::AdminHandler;
+
 type AdminService = StreamableHttpService<AdminHandler, LocalSessionManager>;
 
-/// The admin surface, listening on loopback, plus the file that says how to
-/// reach it.
-///
-/// Dropping this stops the server and removes the manifest, so a stale file
-/// never points at a port nobody is on.
+/// Loopback admin server whose manifest is removed on drop.
 pub struct AdminServer {
     pub url: String,
     manifest: PathBuf,
@@ -32,12 +29,8 @@ pub struct AdminServer {
 
 impl AdminServer {
     /// Starts the server and publishes its address and token beside `database`.
-    ///
-    /// Returns an error if loopback cannot be bound or the manifest cannot be
-    /// written.
     pub async fn start(handler: AdminHandler, database: &Path) -> Result<Self> {
-        // Port zero lets the system pick: a fixed one would collide with a second
-        // daemon running against a different database.
+        // Let the OS avoid port collisions.
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .await
             .context("cannot bind the admin server to loopback")?;
@@ -55,9 +48,7 @@ impl AdminServer {
             move || Ok(handler.clone()),
             Arc::new(LocalSessionManager::default()),
             StreamableHttpServerConfig::default()
-                // Request and response, no long-lived sessions: this surface is
-                // a handful of reads and one write, and plain JSON keeps it
-                // debuggable with curl.
+                // Plain request-response JSON stays easy to debug with curl.
                 .with_stateful_mode(false)
                 .with_json_response(true),
         );
@@ -118,13 +109,7 @@ async fn accept(listener: TcpListener, service: AdminService, token: String) {
     }
 }
 
-// Checked before the request reaches rmcp, because `set_level` stores rules that
-// spend funds and loopback alone only keeps other machines out, not other
-// processes on this one.
-//
-// Plain equality on purpose: the secret is 256 random bits over a local socket,
-// so a timing attack has nothing to work with. Do not "fix" this into something
-// that leaks length by comparing prefixes.
+// Full-token equality authenticates local processes without prefix leaks.
 fn authorized(request: &Request<Incoming>, token: &str) -> bool {
     request
         .headers()
@@ -154,8 +139,7 @@ fn write_manifest(path: &Path, url: &str, token: &str) -> Result<()> {
     let body = serde_json::json!({ "url": url, "token": token });
     std::fs::write(path, serde_json::to_vec_pretty(&body)?)
         .with_context(|| format!("cannot write the admin manifest {}", path.display()))?;
-    // The token is the only thing between another user's process and a rule that
-    // spends funds, so the file it lives in is readable by its owner alone.
+    // Only the owner may read the spending-control token.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

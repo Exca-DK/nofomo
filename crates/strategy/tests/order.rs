@@ -61,8 +61,7 @@ fn status_projects_every_state() {
             OrderStatus::Pending,
         ),
         (
-            // Each step carries a different value: the status projection must
-            // depend only on the phase, never on which transaction it is.
+            // Status depends on the phase, not the transaction step.
             OrderState::SwapReady {
                 step: ExecStep::Cancel,
                 amount_in,
@@ -86,6 +85,7 @@ fn status_projects_every_state() {
                 amount_in,
                 tx_hash: "0xbeef".into(),
                 withdraw_action_id: None,
+                submitted_at: 0,
             },
             OrderStatus::Submitted,
         ),
@@ -153,7 +153,8 @@ fn only_settled_states_are_terminal() {
             step: ExecStep::Swap,
             amount_in,
             tx_hash: "0xbeef".into(),
-            withdraw_action_id: None
+            withdraw_action_id: None,
+            submitted_at: 0,
         })
         .is_terminal()
     );

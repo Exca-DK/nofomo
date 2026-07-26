@@ -109,8 +109,7 @@ impl OrderRow {
     }
 }
 
-// Scalar U256 columns hold a decimal string. Amounts nested inside the `state`
-// JSON are 0x-prefixed hex instead, because that is how serde encodes U256.
+// Scalar U256 values are decimal; state JSON uses serde's hex encoding.
 fn parse_u256(raw: &str, column: &str, row_id: &str) -> Result<U256> {
     raw.parse::<U256>()
         .with_context(|| format!("row {row_id} has a non-u256 {column} '{raw}'"))
@@ -200,8 +199,7 @@ impl OrderStore for SqliteOrderStore {
     async fn upsert_order(&self, order: &Order) -> Result<()> {
         let venue = order.venue.as_str();
         let reserved_amount = order.reserved_amount.to_string();
-        // Denormalized query columns, derived so a reader never has to parse the
-        // state JSON just to filter.
+        // Denormalized columns keep filters out of state JSON.
         let status = order.status().as_str();
         let tx_hash = order.tx_hash();
         let plan = serde_json::to_string(&order.plan).context("cannot serialize order plan")?;

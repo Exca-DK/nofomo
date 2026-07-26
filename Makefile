@@ -7,30 +7,27 @@ define load_env
 	set -a && . $(ENV_LOCAL) && set +a &&
 endef
 
-# Every `sqlx::query!` is validated against this database, which is rebuilt from
-# the migrations on each run. Rebuilding rather than reusing is the point: a
-# schema that can drift from the migrations would validate queries against
-# something nobody ships.
+# Rebuild the sqlx validation database from shipped migrations.
 export DATABASE_URL = sqlite://$(SQLX_DEV_DB)
 
-.PHONY: schema check build bootstrap run health integrate prepare docker-build docker-run help
+.PHONY: schema check build bootstrap run health prepare require-env docker-build docker-run help
+
+# Fail early when the uncommitted local environment file is missing.
+require-env:
+	@[ -f $(ENV_LOCAL) ] || { \
+	  echo "missing $(ENV_LOCAL)" >&2; \
+	  echo "run: cp $(ENV_LOCAL).example $(ENV_LOCAL), then fill in your API keys" >&2; \
+	  exit 1; }
 
 schema:
 	rm -f $(SQLX_DEV_DB)
 	for f in crates/storage/migrations/*.sql; do sqlite3 $(SQLX_DEV_DB) < $$f; done
 
-# Refreshes the committed .sqlx cache, which lets a fresh clone build before it
-# has a database. The cache is a convenience, never the thing queries are checked
-# against — `check` always validates live.
-# --all-targets matters: without it the cache misses queries used only in tests.
-# Never silence this target: `cargo sqlx prepare` clears .sqlx before repopulating
-# it, so a failure here leaves an empty cache behind.
+# Refresh the bootstrap cache for all targets; `check` still validates live.
+# Keep output visible because failure may leave the cache empty.
 # Needs: cargo install sqlx-cli --no-default-features --features sqlite,rustls
 prepare: schema
-	# Force a rebuild of the crate holding the macros. `cargo sqlx prepare`
-	# clears .sqlx and repopulates it from whatever compiles; cargo does not
-	# treat .sqlx as an input, so an up-to-date build collects nothing and
-	# leaves the cache empty.
+	# Force macro recompilation because Cargo does not track .sqlx as an input.
 	cargo clean -p tempo-agentic-storage
 	cargo sqlx prepare --workspace -- --all-targets
 
@@ -42,17 +39,14 @@ check: schema
 build: schema
 	cargo build --workspace --release
 
-bootstrap: build
-	$(load_env) ./target/release/tempo-agentic-admin bootstrap
+bootstrap: require-env build
+	$(load_env) ./target/release/tempo-agentic-daemon bootstrap
 
-run: build bootstrap
-	$(load_env) ./target/release/tempo-agentic
+run: require-env build bootstrap
+	$(load_env) ./target/release/tempo-agentic-daemon run
 
-health: build bootstrap
-	$(load_env) ./target/release/tempo-agentic-admin health
-
-integrate: build
-	$(load_env) ./target/release/tempo-agentic-admin integrate-openclaw
+health: require-env build bootstrap
+	$(load_env) ./target/release/tempo-agentic-daemon health
 
 help:
 	@grep -E '^[a-zA-Z0-9_-]+:' Makefile \

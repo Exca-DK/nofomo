@@ -5,20 +5,15 @@ use std::time::Duration;
 use futures::StreamExt;
 use tempo_agentic_price::{PricePair, PriceSource, PriceTick};
 use tempo_agentic_strategy::LevelStore;
-use tempo_agentic_trigger::TokenResolver;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-/// How often the subscription list is compared against the stored levels. Rules
-/// come and go through the admin CLI, which the daemon has no other signal for.
+use crate::TokenResolver;
+
+/// Poll interval for rule subscription changes.
 const RECONCILE_SECS: u64 = 30;
 
-/// Keeps one subscription running per priced pair, for as long as some level
-/// wants it.
-///
-/// Subscriptions are keyed by pair rather than by level on purpose: three rules
-/// on WETH/base are one stream, not three, and `fired_levels` matches a single
-/// tick against every level anyway.
+/// Keeps one shared subscription per active price pair.
 pub async fn produce(
     levels: Arc<dyn LevelStore>,
     resolver: TokenResolver,
@@ -60,14 +55,12 @@ pub async fn produce(
     }
 }
 
-// A finished stream is not restarted. The `PriceSource` contract says it ends
-// only when the pair cannot be served at all, so retrying would be busywork.
+// A finished stream means the pair is unsupported.
 async fn pump(source: Arc<dyn PriceSource>, pair: PricePair, ticks: mpsc::Sender<PriceTick>) {
     let mut stream = source.stream(&pair);
     while let Some(item) = stream.next().await {
         match item {
-            // A full channel blocks here, which is the point: it holds the feed
-            // back rather than piling up quotes nobody will act on.
+            // A full channel applies backpressure instead of buffering stale ticks.
             Ok(tick) => {
                 if ticks.send(tick).await.is_err() {
                     return;

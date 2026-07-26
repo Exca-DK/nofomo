@@ -4,12 +4,12 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tempo_agentic_config::{EvmChain, EvmConfig, EvmToken};
 use tempo_agentic_domain::parse_units_string;
-use tempo_agentic_strategy::Level;
+use tempo_agentic_price::PriceSource;
+use tempo_agentic_strategy::{Level, base_token};
 
-/// What a person or an agent supplies when writing a rule.
-///
-/// Everything here is in human vocabulary — chain and token names, an amount in
-/// whole units. Turning it into a [`Level`] is what checks it.
+use crate::resolver::TokenResolver;
+
+/// Human-readable input for a rule.
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct LevelDraft {
     pub id: String,
@@ -25,15 +25,13 @@ pub struct LevelDraft {
     pub slippage_bps: u16,
 }
 
-/// Turns a draft into a rule the daemon can act on.
-///
-/// Returns an error when the chain or either token is unconfigured, when the
-/// slippage exceeds `max_slippage_bps`, or when the amount is not a number.
-///
-/// Checking here rather than at execution matters: a rule naming a chain or a
-/// token the daemon does not know would be stored happily and then never fire,
-/// because nothing could price it.
-pub fn validate_level(evm: &EvmConfig, max_slippage_bps: u16, draft: &LevelDraft) -> Result<Level> {
+/// Validates and resolves a draft into an executable rule.
+pub fn validate_level(
+    evm: &EvmConfig,
+    max_slippage_bps: u16,
+    prices: &dyn PriceSource,
+    draft: &LevelDraft,
+) -> Result<Level> {
     let chain = evm
         .chains
         .iter()
@@ -51,11 +49,10 @@ pub fn validate_level(evm: &EvmConfig, max_slippage_bps: u16, draft: &LevelDraft
     }
     let amount = parse_units_string(&draft.amount, input.decimals)?;
 
-    Ok(Level {
+    let level = Level {
         id: draft.id.clone(),
         venue: draft.venue.parse()?,
-        // Taken from the configuration rather than the draft, so the stored
-        // spelling always matches what the resolver looks up.
+        // Keep the configured spelling used by the resolver.
         chain: chain.name.clone(),
         token_in: draft.token_in.to_ascii_uppercase(),
         token_out: draft.token_out.to_ascii_uppercase(),
@@ -64,7 +61,20 @@ pub fn validate_level(evm: &EvmConfig, max_slippage_bps: u16, draft: &LevelDraft
         amount: U256::from_str_radix(&amount, 10).context("amount does not fit in 256 bits")?,
         amount_decimals: input.decimals,
         slippage_bps: draft.slippage_bps,
-    })
+    };
+
+    // Reject rules the source cannot price.
+    let pair = TokenResolver::from_config(evm)
+        .price_pair(&level)
+        .context("cannot work out which token this rule would be priced on")?;
+    if !prices.supports(&pair) {
+        bail!(
+            "no price source quotes {} on {}, so this rule could never fire",
+            base_token(&level),
+            level.chain
+        );
+    }
+    Ok(level)
 }
 
 fn find_token<'a>(chain: &'a EvmChain, symbol: &str) -> Option<&'a EvmToken> {

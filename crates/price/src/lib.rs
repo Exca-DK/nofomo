@@ -10,11 +10,7 @@ use std::pin::Pin;
 
 use futures::Stream;
 
-/// A token priced on one chain.
-///
-/// The chain is an EVM chain ID rather than a feed-specific name, so this type
-/// stays independent of whichever provider ends up quoting it. Translating to a
-/// provider's own vocabulary belongs to that provider's implementation.
+/// A token and its chain-independent EVM chain ID.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PricePair {
     pub chain_id: u64,
@@ -30,10 +26,7 @@ impl PricePair {
     }
 }
 
-/// One price observation.
-///
-/// `published_at` comes from the feed rather than the local clock, so staleness
-/// is measured against when the price was made, not when it arrived.
+/// A price with the feed's publication time.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PriceTick {
     pub pair: PricePair,
@@ -43,17 +36,13 @@ pub struct PriceTick {
 
 pub type PriceStream = Pin<Box<dyn Stream<Item = anyhow::Result<PriceTick>> + Send>>;
 
-/// Source of live prices for one pair.
-///
-/// Returns a boxed stream rather than `impl Stream` so the trait stays
-/// object-safe: the daemon holds `Arc<dyn PriceSource>` and tests substitute a
-/// scripted double.
+/// Object-safe source of live prices.
 pub trait PriceSource: Send + Sync {
-    /// Quotes for `pair`, indefinitely.
-    ///
-    /// A failed read is an item, not the end of the stream, so a consumer can
-    /// ride out transient trouble. The stream ends only when the source cannot
-    /// serve this pair at all — an unsupported chain, say — because retrying
-    /// that would never succeed.
+    /// Streams quotes and transient errors; ends only for an unsupported pair.
     fn stream(&self, pair: &PricePair) -> PriceStream;
+
+    /// Checks support before storing a rule; unknown support defaults to true.
+    fn supports(&self, _pair: &PricePair) -> bool {
+        true
+    }
 }

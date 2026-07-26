@@ -25,9 +25,7 @@ pub const TESTNET: NetworkConstants = NetworkConstants {
     clmm_pools_handle: "0x51f8de2366af49a51ee81184eb28ca24739d3d48c8158d063dab6700c0b65413",
 };
 
-/// Returns the Cetus CLMM package/object IDs for the given network.
-///
-/// Mainnet IDs are not yet populated; only testnet trading is supported today.
+/// Returns Cetus IDs; currently only testnet is configured.
 pub fn for_network(network: SuiNetwork) -> anyhow::Result<NetworkConstants> {
     match network {
         SuiNetwork::Testnet => Ok(TESTNET),

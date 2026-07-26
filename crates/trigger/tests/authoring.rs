@@ -3,15 +3,33 @@ use std::collections::HashMap;
 use alloy_primitives::U256;
 use tempo_agentic_config::{EvmChain, EvmConfig, EvmToken};
 use tempo_agentic_domain::VenueName;
+use tempo_agentic_price::{PricePair, PriceSource, PriceStream};
 use tempo_agentic_strategy::Side;
 use tempo_agentic_trigger::{LevelDraft, validate_level};
+
+/// Supports only its configured chains.
+struct Prices {
+    chains: Vec<u64>,
+}
+
+impl PriceSource for Prices {
+    fn supports(&self, pair: &PricePair) -> bool {
+        self.chains.contains(&pair.chain_id)
+    }
+
+    fn stream(&self, _pair: &PricePair) -> PriceStream {
+        Box::pin(futures::stream::empty())
+    }
+}
+
+fn prices() -> Prices {
+    Prices { chains: vec![8453] }
+}
 
 const MAX_SLIPPAGE_BPS: u16 = 500;
 
 fn evm() -> EvmConfig {
     EvmConfig {
-        keystore_path: "/dev/null".into(),
-        password_file: "/dev/null".into(),
         chains: vec![EvmChain {
             name: "base".into(),
             chain_id: 8453,
@@ -51,15 +69,19 @@ fn draft() -> LevelDraft {
     }
 }
 
+fn accept(draft: LevelDraft) -> tempo_agentic_strategy::Level {
+    validate_level(&evm(), MAX_SLIPPAGE_BPS, &prices(), &draft).unwrap()
+}
+
 fn reject(draft: LevelDraft) -> String {
-    validate_level(&evm(), MAX_SLIPPAGE_BPS, &draft)
+    validate_level(&evm(), MAX_SLIPPAGE_BPS, &prices(), &draft)
         .expect_err("this draft must not be storable")
         .to_string()
 }
 
 #[test]
 fn a_sound_draft_becomes_a_rule() {
-    let level = validate_level(&evm(), MAX_SLIPPAGE_BPS, &draft()).unwrap();
+    let level = accept(draft());
 
     assert_eq!(level.id, "l-1");
     assert_eq!(level.venue, VenueName::Uniswap);
@@ -68,12 +90,10 @@ fn a_sound_draft_becomes_a_rule() {
     assert_eq!(level.slippage_bps, 50);
 }
 
-// The amount is written the way a person says it and stored the way a chain
-// wants it. Getting the scale wrong here would spend a millionth of the intended
-// sum, or a million times it.
+// Convert human units to exact chain units.
 #[test]
 fn the_amount_is_scaled_by_the_input_token() {
-    let level = validate_level(&evm(), MAX_SLIPPAGE_BPS, &draft()).unwrap();
+    let level = accept(draft());
     assert_eq!(level.amount, U256::from(25_000_000u64));
     assert_eq!(level.amount_decimals, 6);
 
@@ -84,34 +104,27 @@ fn the_amount_is_scaled_by_the_input_token() {
         amount: "0.5".into(),
         ..draft()
     };
-    let level = validate_level(&evm(), MAX_SLIPPAGE_BPS, &selling).unwrap();
+    let level = accept(selling);
     assert_eq!(level.amount, U256::from(500_000_000_000_000_000u64));
     assert_eq!(level.amount_decimals, 18);
 }
 
-// The stored spelling comes from the configuration, because that is what the
-// resolver looks the chain up by when a tick arrives.
+// Store the resolver's configured spelling.
 #[test]
 fn the_chain_is_stored_as_the_configuration_spells_it() {
-    let level = validate_level(
-        &evm(),
-        MAX_SLIPPAGE_BPS,
-        &LevelDraft {
-            chain: "BASE".into(),
-            token_in: "usdc".into(),
-            token_out: "weth".into(),
-            ..draft()
-        },
-    )
-    .unwrap();
+    let level = accept(LevelDraft {
+        chain: "BASE".into(),
+        token_in: "usdc".into(),
+        token_out: "weth".into(),
+        ..draft()
+    });
 
     assert_eq!(level.chain, "base");
     assert_eq!(level.token_in, "USDC");
     assert_eq!(level.token_out, "WETH");
 }
 
-// Nothing could ever price these, so they would sit in the database looking
-// armed and never fire.
+// Reject unpriceable rules.
 #[test]
 fn a_rule_nothing_can_price_is_refused() {
     assert!(
@@ -137,8 +150,7 @@ fn a_rule_nothing_can_price_is_refused() {
     );
 }
 
-// The venue would refuse this on every single tick, so the rule would burn a
-// quote a minute and never trade.
+// Reject rules the venue cannot execute.
 #[test]
 fn slippage_above_the_ceiling_is_refused() {
     let error = reject(LevelDraft {
@@ -181,5 +193,37 @@ fn an_unreadable_side_venue_or_amount_is_refused() {
             ..draft()
         })
         .is_empty()
+    );
+}
+
+// Reject configured chains unsupported by the price source.
+#[test]
+fn a_chain_no_source_quotes_is_refused() {
+    let quoting_nothing = Prices { chains: Vec::new() };
+    let error = validate_level(&evm(), MAX_SLIPPAGE_BPS, &quoting_nothing, &draft())
+        .expect_err("a rule nothing can price must not be storable")
+        .to_string();
+    assert!(error.contains("could never fire"), "unclear: {error}");
+    assert!(error.contains("WETH"), "say which token: {error}");
+}
+
+// Support checks follow the side's priced token.
+#[test]
+fn the_side_decides_which_token_has_to_be_quotable() {
+    assert!(validate_level(&evm(), MAX_SLIPPAGE_BPS, &prices(), &draft()).is_ok());
+    assert!(
+        validate_level(
+            &evm(),
+            MAX_SLIPPAGE_BPS,
+            &prices(),
+            &LevelDraft {
+                token_in: "WETH".into(),
+                token_out: "USDC".into(),
+                side: "sell".into(),
+                amount: "0.5".into(),
+                ..draft()
+            }
+        )
+        .is_ok()
     );
 }

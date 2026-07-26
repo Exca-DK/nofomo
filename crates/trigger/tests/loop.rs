@@ -121,8 +121,6 @@ impl Fixture {
 
 fn resolver() -> TokenResolver {
     TokenResolver::from_config(&EvmConfig {
-        keystore_path: "/dev/null".into(),
-        password_file: "/dev/null".into(),
         chains: vec![EvmChain {
             name: "base".into(),
             chain_id: BASE_ID,
@@ -178,7 +176,7 @@ async fn drive(deps: TriggerDeps, waker: Arc<Notify>, ticks: Vec<PriceTick>) {
     for tick in ticks {
         tx.send(tick).await.unwrap();
     }
-    // Closing the sender ends `run`, so awaiting it means every tick was handled.
+    // Closing the sender drains and ends the loop.
     drop(tx);
     loop_task.await.unwrap();
 }
@@ -232,8 +230,7 @@ async fn a_rejected_preflight_creates_nothing_and_the_loop_survives() {
     fixture.cleanup();
 }
 
-// Each pre-flight is six network calls, some of them billed. A level that cannot
-// execute must not re-quote on every tick.
+// Rejected pre-flights must not repeat on every tick.
 #[tokio::test]
 async fn a_rejected_level_goes_quiet_instead_of_requoting() {
     let (fixture, deps) = Fixture::new("quiet", false).await;
@@ -259,8 +256,7 @@ async fn a_rejected_level_goes_quiet_instead_of_requoting() {
     fixture.cleanup();
 }
 
-// The order id comes from the level and the tick, so replaying a tick upserts
-// the same row rather than adding a second order for one intent.
+// Replayed ticks upsert the same deterministic order.
 #[tokio::test]
 async fn the_same_tick_twice_yields_one_order() {
     let (fixture, deps) = Fixture::new("idempotent", true).await;
@@ -318,8 +314,7 @@ async fn a_tick_that_fires_nothing_does_not_wake_anyone() {
     fixture.cleanup();
 }
 
-// A failed order re-arms the level, but not on the very next tick: quoting again
-// straight away is what burns money on a rule whose swap keeps reverting.
+// Failed orders re-arm only after the cooldown.
 #[tokio::test]
 async fn a_level_that_just_failed_is_left_to_rest() {
     let (fixture, deps) = Fixture::new("cooldown", true).await;

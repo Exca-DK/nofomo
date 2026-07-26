@@ -1,5 +1,5 @@
 mod admin;
-mod agent;
+mod server;
 
 pub use admin::AdminHandler;
-pub use agent::AgentHandler;
+pub use server::{AdminServer, manifest_path};

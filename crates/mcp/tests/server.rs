@@ -1,10 +1,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use tempo_agentic_config::EvmConfig;
-use tempo_agentic_daemon::admin::{AdminServer, manifest_path};
-use tempo_agentic_mcp::AdminHandler;
+use tempo_agentic_mcp::{AdminHandler, AdminServer, manifest_path};
+use tempo_agentic_price_dexpaprika::DexPaprikaSource;
 use tempo_agentic_storage::{SqliteLevelStore, SqliteOrderStore, connect_pool};
 
 struct Fixture {
@@ -14,26 +13,20 @@ struct Fixture {
 }
 
 impl Fixture {
-    async fn start() -> Self {
+    // Test names stay unique under parallel execution.
+    async fn start(name: &str) -> Self {
         let database = std::env::temp_dir().join(format!(
-            "tempo-agentic-daemon-admin-{}-{}.db",
+            "tempo-agentic-mcp-server-{}-{name}.db",
             std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
         ));
         let pool = connect_pool(&database).await.unwrap();
         let handler = AdminHandler::new(
             Arc::new(SqliteLevelStore::new(pool.clone())),
             Arc::new(SqliteOrderStore::new(pool)),
-            EvmConfig {
-                keystore_path: "/dev/null".into(),
-                password_file: "/dev/null".into(),
-                chains: Vec::new(),
-            },
+            EvmConfig { chains: Vec::new() },
             500,
             false,
+            Arc::new(DexPaprikaSource::new("https://example.invalid")),
         );
         let server = AdminServer::start(handler, &database).await.unwrap();
 
@@ -74,11 +67,10 @@ impl Fixture {
     }
 }
 
-// Loopback keeps other machines out; it does nothing about other processes on
-// this one, and `set_level` stores rules that spend funds.
+// Loopback still requires authentication between local processes.
 #[tokio::test]
 async fn a_request_without_the_token_is_refused() {
-    let fixture = Fixture::start().await;
+    let fixture = Fixture::start("token").await;
 
     assert_eq!(
         fixture.post(None).await,
@@ -100,11 +92,10 @@ async fn a_request_without_the_token_is_refused() {
     fixture.cleanup();
 }
 
-// A manifest left behind would point at a port nobody is listening on, and hand
-// out a token that no longer opens anything.
+// Dropping the server must remove its stale manifest.
 #[tokio::test]
 async fn stopping_the_server_takes_the_manifest_with_it() {
-    let fixture = Fixture::start().await;
+    let fixture = Fixture::start("manifest").await;
     let manifest = manifest_path(&fixture.database);
     assert!(manifest.exists());
 

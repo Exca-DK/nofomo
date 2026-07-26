@@ -22,8 +22,7 @@ fn weth() -> PricePair {
     PricePair::new(BASE_CHAIN_ID, WETH)
 }
 
-/// Hands out a scripted sequence, so the gates can be exercised without a feed.
-/// Keyed by token so one double can serve several pairs.
+/// Scripted quotes keyed by token.
 struct Scripted {
     frames: Mutex<Vec<(String, Vec<anyhow::Result<PriceTick>>)>>,
 }
@@ -84,8 +83,7 @@ async fn a_fresh_quote_passes() {
     assert_eq!(collect(&source, &pair).await, vec![Some(1_600.0)]);
 }
 
-// No previous price means nothing to compare against, so the first quote must
-// not be treated as an implausible move.
+// The first quote has no movement baseline.
 #[tokio::test]
 async fn the_first_quote_passes_without_a_baseline() {
     let pair = weth();
@@ -119,8 +117,7 @@ async fn a_quote_from_the_future_is_dropped() {
     assert_eq!(collect(&source, &pair).await, vec![Some(1_601.0)]);
 }
 
-// The important half: one bad quote must not become the baseline, or every good
-// quote after it would be rejected too and the feed would go permanently dead.
+// A rejected quote must not poison the baseline.
 #[tokio::test]
 async fn a_wild_jump_is_dropped_without_poisoning_the_baseline() {
     let pair = weth();
@@ -155,8 +152,7 @@ async fn an_ordinary_move_is_not_treated_as_a_jump() {
     );
 }
 
-// An error is worth reporting, but it must not end the stream: the daemon has to
-// keep receiving quotes after a hiccup.
+// Transient errors must not end the stream.
 #[tokio::test]
 async fn an_error_is_forwarded_and_the_stream_survives() {
     let pair = weth();
@@ -175,8 +171,7 @@ async fn an_error_is_forwarded_and_the_stream_survives() {
     assert_eq!(items[2].as_ref().unwrap().price_usd, 1_610.0);
 }
 
-// Each pair gets its own history; WETH's price must not be the baseline USDC is
-// judged against.
+// Each pair needs an independent baseline.
 #[tokio::test]
 async fn each_pair_keeps_its_own_baseline() {
     let weth_pair = weth();

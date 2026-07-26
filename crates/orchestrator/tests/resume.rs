@@ -1,13 +1,14 @@
 mod common;
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use alloy_primitives::U256;
 use common::{BASE_ID, Harness, Script, order};
 use tempo_agentic_domain::ExecStep;
 use tempo_agentic_strategy::OrderState;
 
 const AMOUNT: u64 = 1_000_000;
-/// Bytes a previous run signed. Nothing may produce these again; a resumed order
-/// has to send the ones it already has, or the nonce and the hash would change.
+/// Signed bytes that a resumed order must reuse.
 const SIGNED: &str = "0x02f8730182deadbeef";
 const HASH: &str = "0xfeedfacefeedface";
 
@@ -24,7 +25,7 @@ async fn a_broadcasting_order_resumes_with_the_bytes_it_already_signed() {
     };
     harness.put(&interrupted).await;
 
-    // The process dies here. Everything past this line reads only what is on disk.
+    // Simulate a crash; only disk state remains.
     let harness = harness.reopen(Script::default()).await;
     let resumed = harness.drive("o-1").await;
 
@@ -44,8 +45,7 @@ async fn a_broadcasting_order_resumes_with_the_bytes_it_already_signed() {
     harness.cleanup();
 }
 
-// The transaction was already out when the process died, so the only thing left
-// is to find out how it went. Re-sending would be wasteful at best.
+// Resume receipt polling without rebroadcasting.
 #[tokio::test]
 async fn a_submitted_order_resumes_into_a_receipt_check() {
     let harness = Harness::new("resume-submitted", Script::default()).await;
@@ -55,6 +55,7 @@ async fn a_submitted_order_resumes_into_a_receipt_check() {
         amount_in: U256::from(AMOUNT),
         tx_hash: HASH.into(),
         withdraw_action_id: None,
+        submitted_at: now_unix(),
     };
     harness.put(&interrupted).await;
 
@@ -72,8 +73,7 @@ async fn a_submitted_order_resumes_into_a_receipt_check() {
     harness.cleanup();
 }
 
-// An approval that confirmed before the crash must not be paid for twice: the
-// venue is asked afresh what is left, and it no longer names the approval.
+// Re-derive steps so a confirmed approval is not repeated.
 #[tokio::test]
 async fn a_resumed_order_takes_the_step_the_venue_still_wants() {
     let harness = Harness::new("resume-allowance", Script::default()).await;
@@ -97,4 +97,11 @@ async fn a_resumed_order_takes_the_step_the_venue_still_wants() {
     assert_eq!(harness.broadcasts(), 1, "the allowance must not be re-sent");
     assert!(matches!(resumed.state, OrderState::Filled { .. }));
     harness.cleanup();
+}
+
+fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
 }

@@ -8,9 +8,7 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use tempo_agentic_config::{EvmChain, EvmConfig, EvmToken, UniswapConfig};
-use tempo_agentic_domain::{
-    ChainClient, QuoteTradeRequest, ReceiptStatus, SignedTx, TradeVenue, TxContext,
-};
+use tempo_agentic_domain::{EvmNode, QuoteTradeRequest, TradeVenue, TxContext};
 use tempo_agentic_graph::GraphClient;
 use tempo_agentic_uniswap::UniswapVenue;
 
@@ -22,12 +20,9 @@ const CHAIN_ID: u64 = 8453;
 struct FakeChainClient;
 
 #[async_trait]
-impl ChainClient for FakeChainClient {
+impl EvmNode for FakeChainClient {
     fn chain_id(&self) -> u64 {
         CHAIN_ID
-    }
-    async fn tx_context(&self, _from: &str) -> Result<TxContext> {
-        bail!("not used by quote()")
     }
     async fn balance_of(&self, _token: &str, _owner: &str) -> Result<String> {
         Ok("1000000000000000000000".to_string())
@@ -36,12 +31,6 @@ impl ChainClient for FakeChainClient {
         bail!("not used by quote()")
     }
     async fn estimate_gas(&self, _from: &str, _to: &str, _value: &str, _data: &str) -> Result<u64> {
-        bail!("not used by quote()")
-    }
-    async fn broadcast(&self, _signed: &SignedTx) -> Result<String> {
-        bail!("not used by quote()")
-    }
-    async fn confirmation(&self, _tx_hash: &str) -> Result<ReceiptStatus> {
         bail!("not used by quote()")
     }
 }
@@ -67,14 +56,11 @@ async fn venue(mock_uri: &str, key_env: &str) -> UniswapVenue {
         },
     );
     let evm = EvmConfig {
-        keystore_path: String::new(),
-        password_file: String::new(),
         chains: vec![EvmChain {
             name: "base".to_string(),
             chain_id: CHAIN_ID,
             rpc_url: "http://unused.invalid".to_string(),
-            // Left empty so the graph research guard is skipped and the mock
-            // server never has to serve a /research query.
+            // Empty skips graph research in this API-only test.
             graph_subgraph_id: String::new(),
             tokens,
         }],
@@ -84,10 +70,9 @@ async fn venue(mock_uri: &str, key_env: &str) -> UniswapVenue {
         api_key_env: key_env.to_string(),
         min_pool_tvl_usd: "0".to_string(),
     };
-    let mut chains: HashMap<u64, Arc<dyn ChainClient>> = HashMap::new();
+    let mut chains: HashMap<u64, Arc<dyn EvmNode>> = HashMap::new();
     chains.insert(CHAIN_ID, Arc::new(FakeChainClient));
-    // Both constructors read `key_env` synchronously, so the var only needs
-    // to exist for the duration of this closure.
+    // Constructors read `key_env` synchronously.
     temp_env::with_var(key_env, Some("test-key"), || {
         UniswapVenue::new(
             &uniswap_config,
@@ -112,8 +97,7 @@ fn request() -> QuoteTradeRequest {
     }
 }
 
-// A quote response that passes every validation, so each test can flip one
-// field and know that field is the only reason it now fails.
+// A valid baseline quote for single-field failure tests.
 fn valid_quote_response() -> Value {
     json!({
         "routing": "CLASSIC",
@@ -209,8 +193,7 @@ async fn rejects_malformed_output_amount() {
 async fn rejects_minimum_output_below_the_requested_slippage_floor() {
     let server = MockServer::start().await;
     let mut response = valid_quote_response();
-    // 50 bps of slippage on 990000000000000000 floors at 985050000000000000;
-    // this is below that floor.
+    // Below the 50 bps floor of 985050000000000000.
     response["quote"]["output"]["minimumAmount"] = json!("100000000000000000");
     mount_quote(&server, response).await;
     let venue = venue(&server.uri(), "UNISWAP_TEST_KEY_SLIPPAGE").await;
@@ -223,9 +206,7 @@ async fn rejects_minimum_output_below_the_requested_slippage_floor() {
     );
 }
 
-// The approval step is where the API-controlled spender is checked: build()
-// refuses to sign an approval that grants allowance to anything but the
-// venue's known proxy address.
+// Approval building rejects an API-controlled unknown spender.
 #[tokio::test]
 async fn rejects_approval_calldata_to_an_unexpected_spender() {
     let server = MockServer::start().await;
@@ -250,7 +231,7 @@ async fn rejects_approval_calldata_to_an_unexpected_spender() {
 
     let venue = venue(&server.uri(), "UNISWAP_TEST_KEY_SPENDER").await;
     let draft = venue.quote(&request()).await.unwrap();
-    let ctx = TxContext {
+    let ctx = TxContext::Evm {
         chain_id: CHAIN_ID,
         nonce: 0,
         max_fee_per_gas: 1,

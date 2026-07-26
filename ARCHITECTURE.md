@@ -1,10 +1,10 @@
 # Architecture
 
-nofomo is a non-custodial trading agent. A user-side daemon exposes MCP tools (`market_research`, `quote_trade`, `execute_trade`) to an AI agent host. It can optionally act on standing price levels via a cloud plane that only moves prices without holding funds or keys.
+nofomo is a non-custodial trading daemon. A user-side daemon exposes MCP tools (`status`, `levels`, `orders`, `set_level`, `delete_level`) to an AI agent host. The agent only writes standing price levels; deciding when to act on one, and doing it, belongs to the daemon alone.
 
 ## Two planes
 
-The user plane runs as one binary (`nofomo`) on the user's machine, holds keys and local SQLite state, and makes all trade decisions. The system is non-custodial because execution depends on local key material.
+The user plane runs as one binary (`tempo-agentic-daemon`) on the user's machine, holds keys and local SQLite state, and makes all trade decisions. The system is non-custodial because execution depends on local key material.
 
 The cloud plane (`nofomo-relay`, `nofomo-indexer`, `nofomo-trigger`) provides stateless services that broadcast signed transactions, index fills, and stream prices. None of these services hold private keys or decide when to trade.
 
@@ -22,13 +22,17 @@ TradeVenue::build  -> UnsignedTx
 
 `ChainClient` handles node communication for execution, context, broadcasting, and confirmation. `Signer` turns an `UnsignedTx` into a `SignedTx`.
 
-Venues may read chain state directly through an RPC client. Only the chain client broadcasts, and only the signer signs.
+Venues may read chain state directly through an RPC client. Only the chain client broadcasts, and only the signer signs. No venue ever reads a key file.
 
-`ChainId` is family-tagged (`Evm(u64)` or `Sui`). `TxContext`, `UnsignedTx`, and `SignedTx` are family-tagged enums so one execution loop drives every venue.
+`TxContext`, `UnsignedTx`, and `SignedTx` are family-tagged enums, so one execution loop drives every venue. The transaction's variant picks the key, and a venue must build the family its `TxContext` carries. `crates/vault` holds one key per `ChainFamily` and is the only place key material lives; everything downstream sees `Arc<dyn Signer>`.
+
+A plan names its own chain through `ExecutionPlan::chain`, and `ExecDeps` keys its node clients by that `ChainId`, so routing never guesses. `ChainClient` stays family-neutral; reads only EVM venues need (`balance_of`, `allowance`, `estimate_gas`) live on `EvmNode` instead, so no other family is asked questions its chain has no notion of.
+
+An order persists one signed-transaction string. EVM stores raw EIP-2718 bytes; Sui keeps its signature detached from the transaction, so it stores both together and rebuilds them on the way back. Either way a restart rebroadcasts the identical transaction under the digest it already recorded.
 
 ## Execution and order state
 
-Two paths run plans to completion. The synchronous path (`quote_trade` to `execute_trade`) drives plan steps in one call. The order-driven path in `crates/orchestrator` advances standing levels via a state machine that persists after transitions to handle crashes.
+One path runs plans to completion: `crates/orchestrator` advances standing levels through a state machine that persists after every transition, so a crash resumes rather than repeats. There is deliberately no second, synchronous path an agent could call — a swap has exactly one way to happen.
 
 Execution-path code is kept small deliberately. Any growth should be a reviewed architectural decision.
 

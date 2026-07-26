@@ -22,10 +22,7 @@ impl Side {
 impl std::str::FromStr for Side {
     type Err = anyhow::Error;
 
-    /// Parses the stable SQLite representation produced by [`Side::as_str`].
-    ///
-    /// Returns an error for any other value so a corrupted row fails loudly
-    /// instead of silently flipping a buy into a sell.
+    /// Parses [`Side::as_str`] output, rejecting unknown values.
     fn from_str(value: &str) -> anyhow::Result<Self> {
         match value {
             "buy" => Ok(Self::Buy),
@@ -35,11 +32,7 @@ impl std::str::FromStr for Side {
     }
 }
 
-/// A standing rule: swap `token_in` for `token_out` once the priced asset
-/// crosses `trigger_price_usd`.
-///
-/// Carries no execution state of its own. Whether it has already fired is read
-/// from its orders, so the two can never disagree.
+/// Swaps tokens when the priced asset crosses a threshold.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Level {
     pub id: String,
@@ -55,14 +48,13 @@ pub struct Level {
     pub trigger_price_usd: f64,
     /// Raw base units of `token_in` to spend.
     pub amount: U256,
-    /// Decimals of `token_in`, snapshotted so the amount stays readable and
-    /// correctly scaled even if the token config later changes.
+    /// Snapshotted `token_in` decimals.
     pub amount_decimals: u8,
     /// Maximum tolerated slippage, in basis points.
     pub slippage_bps: u16,
 }
 
-/// The asset `trigger_price_usd` refers to: what a buy acquires, what a sell disposes of.
+/// Asset priced by this level.
 pub fn base_token(level: &Level) -> &str {
     match level.side {
         Side::Buy => &level.token_out,
@@ -70,10 +62,7 @@ pub fn base_token(level: &Level) -> &str {
     }
 }
 
-/// Decides whether `level` should fire at `price_usd`, the USD price of the
-/// asset named by [`base_token`]. A buy fires at or below its trigger, a sell
-/// at or above. The caller is responsible for supplying a price for the right
-/// asset.
+/// Checks whether a matching asset price crosses the level's threshold.
 pub fn level_fires(level: &Level, price_usd: f64) -> bool {
     match level.side {
         Side::Buy => price_usd <= level.trigger_price_usd,

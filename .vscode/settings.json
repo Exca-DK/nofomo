@@ -1,9 +1,5 @@
 {
-  // `sqlx::query!` is validated against a real schema, not the .sqlx cache: a
-  // cache can be stale relative to the migrations and would compile happily.
-  // This database is rebuilt from crates/storage/migrations by `make schema`,
-  // which every other make target depends on. Run `make schema` once after
-  // cloning so the editor has something to validate against.
+  // Run `make schema` after cloning so sqlx validates against current migrations.
   "rust-analyzer.cargo.extraEnv": {
     "DATABASE_URL": "sqlite:///tmp/tempo-agentic-sqlx.db"
   },

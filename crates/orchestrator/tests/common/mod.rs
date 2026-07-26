@@ -1,5 +1,4 @@
-// Cargo compiles this module into every test binary that declares it, so
-// whatever one binary does not call looks unused to the compiler.
+// Each test binary uses a different subset of these helpers.
 #![allow(dead_code)]
 
 use std::collections::HashMap;
@@ -12,8 +11,9 @@ use alloy_primitives::U256;
 use anyhow::{Result, bail};
 use async_trait::async_trait;
 use tempo_agentic_domain::{
-    ChainClient, ExecStep, ExecutionPlan, QuoteDraft, QuoteTradeRequest, ReceiptStatus, SignedTx,
-    Signer, TradeVenue, TxContext, UnsignedTx, VenueName,
+    ChainClient, ChainFamily, ChainId, EvmTx, ExecStep, ExecutionPlan, QuoteDraft,
+    QuoteTradeRequest, ReceiptStatus, SignedEvmTx, SignedTx, Signer, TradeVenue, TxContext,
+    UnsignedTx, VenueName,
 };
 use tempo_agentic_orchestrator::{ExecDeps, drive_order, sweep};
 use tempo_agentic_storage::{SqliteLevelStore, SqliteOrderStore, connect_pool};
@@ -62,10 +62,7 @@ pub fn order(id: &str, chain_id: u64) -> Order {
     Order::new(id.into(), &level(), plan, 0)
 }
 
-/// Reads the stored row at the moment a fake is called.
-///
-/// This is what proves the crash-safety property: the phase seen here is the one
-/// that was already durable when the side effect ran, not the one it produced.
+/// Captures the durable phase visible when a fake runs.
 #[derive(Clone)]
 struct Spy {
     orders: Arc<SqliteOrderStore>,
@@ -127,16 +124,25 @@ impl TradeVenue for FakeVenue {
         if self.build_fails {
             bail!("Uniswap /swap returned 400: quote expired");
         }
-        Ok(UnsignedTx {
-            chain_id: ctx.chain_id,
-            nonce: ctx.nonce,
+        let TxContext::Evm {
+            chain_id,
+            nonce,
+            max_fee_per_gas,
+            max_priority_fee_per_gas,
+        } = ctx
+        else {
+            bail!("this fake only builds EVM transactions");
+        };
+        Ok(UnsignedTx::Evm(EvmTx {
+            chain_id: *chain_id,
+            nonce: *nonce,
             gas_limit: 21_000,
-            max_fee_per_gas: ctx.max_fee_per_gas,
-            max_priority_fee_per_gas: ctx.max_priority_fee_per_gas,
+            max_fee_per_gas: *max_fee_per_gas,
+            max_priority_fee_per_gas: *max_priority_fee_per_gas,
             to: "0x2222222222222222222222222222222222222222".into(),
             value: "0".into(),
             data: "0xdeadbeef".into(),
-        })
+        }))
     }
 }
 
@@ -147,17 +153,17 @@ struct FakeSigner {
 
 #[async_trait]
 impl Signer for FakeSigner {
-    fn address(&self) -> &str {
-        WALLET
+    fn address(&self, _family: ChainFamily) -> Result<&str> {
+        Ok(WALLET)
     }
 
     async fn sign(&self, _tx: &UnsignedTx) -> Result<SignedTx> {
         self.spy.record().await;
         let nth = self.signatures.fetch_add(1, Ordering::SeqCst);
-        Ok(SignedTx {
+        Ok(SignedTx::Evm(SignedEvmTx {
             raw: format!("0xraw{nth}"),
             hash: format!("0xhash{nth}"),
-        })
+        }))
     }
 }
 
@@ -166,20 +172,19 @@ struct FakeChain {
     receipts: Vec<Receipt>,
     receipt_calls: AtomicUsize,
     broadcasts: AtomicUsize,
-    /// Raw bytes of every send, so a test can prove a resumed order reused the
-    /// signature it already had instead of making a new one.
+    /// Raw bytes of every send.
     sent: Mutex<Vec<String>>,
     broadcast_fails: bool,
 }
 
 #[async_trait]
 impl ChainClient for FakeChain {
-    fn chain_id(&self) -> u64 {
-        BASE_ID
+    fn chain(&self) -> ChainId {
+        ChainId::Evm(BASE_ID)
     }
 
     async fn tx_context(&self, _from: &str) -> Result<TxContext> {
-        Ok(TxContext {
+        Ok(TxContext::Evm {
             chain_id: BASE_ID,
             nonce: 7,
             max_fee_per_gas: 1_000,
@@ -187,21 +192,12 @@ impl ChainClient for FakeChain {
         })
     }
 
-    async fn balance_of(&self, _token: &str, _owner: &str) -> Result<String> {
-        bail!("the orchestrator never reads balances")
-    }
-
-    async fn allowance(&self, _token: &str, _owner: &str, _spender: &str) -> Result<String> {
-        bail!("the orchestrator never reads allowances")
-    }
-
-    async fn estimate_gas(&self, _from: &str, _to: &str, _value: &str, _data: &str) -> Result<u64> {
-        bail!("the venue estimates gas, not the orchestrator")
-    }
-
     async fn broadcast(&self, signed: &SignedTx) -> Result<String> {
         self.spy.record().await;
         self.broadcasts.fetch_add(1, Ordering::SeqCst);
+        let SignedTx::Evm(signed) = signed else {
+            bail!("this fake only broadcasts EVM transactions");
+        };
         self.sent.lock().unwrap().push(signed.raw.clone());
         if self.broadcast_fails {
             bail!("eth_sendRawTransaction failed: insufficient funds for gas");
@@ -220,8 +216,7 @@ impl ChainClient for FakeChain {
     }
 }
 
-/// What the fakes answer. Each script repeats its last entry once exhausted, so
-/// a test only spells out the calls it actually cares about.
+/// Scripted fake responses, repeating the last entry.
 pub struct Script {
     pub steps: Vec<Vec<ExecStep>>,
     pub receipts: Vec<Receipt>,
@@ -254,8 +249,7 @@ pub struct Harness {
 }
 
 impl Harness {
-    /// Builds a database holding one order, `o-1`, in `SwapReady`, with the fakes
-    /// watching that row.
+    /// Builds a database with order `o-1` in `SwapReady`.
     pub async fn new(name: &str, script: Script) -> Self {
         let path = std::env::temp_dir().join(format!(
             "tempo-agentic-orchestrator-{name}-{}-{}.db",
@@ -271,11 +265,7 @@ impl Harness {
         harness
     }
 
-    /// Closes the database and opens the very same file again with fresh fakes.
-    ///
-    /// This stands in for a restart, so nothing is seeded: the level and the
-    /// order are already on disk. Migrations are idempotent, so replaying them
-    /// on reopen is safe.
+    /// Reopens the same database with fresh fakes to simulate restart.
     pub async fn reopen(self, script: Script) -> Self {
         let path = self.path.clone();
         drop(self);
@@ -312,7 +302,7 @@ impl Harness {
         });
         let deps = ExecDeps {
             venues: vec![venue.clone()],
-            chains: HashMap::from([(BASE_ID, chain.clone() as Arc<dyn ChainClient>)]),
+            chains: HashMap::from([(ChainId::Evm(BASE_ID), chain.clone() as Arc<dyn ChainClient>)]),
             signer: signer.clone(),
             allow_broadcast: script.allow_broadcast,
         };

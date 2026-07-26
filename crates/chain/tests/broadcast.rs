@@ -1,18 +1,25 @@
 use tempo_agentic_chain::is_duplicate_submission;
 
-// A re-broadcast after a crash must not look like a failure: the bytes are
-// identical, so the node is reporting a transaction that is already accounted
-// for, not a new problem.
+// Identical rebroadcasts after a crash count as accepted.
 #[test]
 fn known_duplicate_phrasings_count_as_submitted() {
-    for message in [
-        "already known",
-        "transaction already imported",
-        "nonce too low",
-        "replacement transaction underpriced",
-    ] {
+    for message in ["already known", "transaction already imported"] {
         assert!(is_duplicate_submission(message), "missed: {message}");
     }
+}
+
+// `nonce too low` is resolved later by receipt or deadline.
+#[test]
+fn a_spent_nonce_counts_as_submitted() {
+    assert!(is_duplicate_submission("nonce too low"));
+}
+
+// Replacement-underpriced means different bytes own the nonce.
+#[test]
+fn a_nonce_held_by_another_transaction_is_a_failure() {
+    assert!(!is_duplicate_submission(
+        "replacement transaction underpriced"
+    ));
 }
 
 #[test]

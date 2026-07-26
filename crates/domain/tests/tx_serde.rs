@@ -1,7 +1,7 @@
-use tempo_agentic_domain::{SignedTx, UnsignedTx};
+use tempo_agentic_domain::{EvmTx, SignedEvmTx};
 
-fn unsigned_tx() -> UnsignedTx {
-    UnsignedTx {
+fn unsigned_tx() -> EvmTx {
+    EvmTx {
         chain_id: 8453,
         nonce: 7,
         gas_limit: 210_000,
@@ -13,8 +13,8 @@ fn unsigned_tx() -> UnsignedTx {
     }
 }
 
-fn signed_tx() -> SignedTx {
-    SignedTx {
+fn signed_tx() -> SignedEvmTx {
+    SignedEvmTx {
         raw: "0x02f8b0...".into(),
         hash: "0xdeadbeef00000000000000000000000000000000000000000000000000000000".into(),
     }
@@ -24,7 +24,7 @@ fn signed_tx() -> SignedTx {
 fn unsigned_tx_round_trips_through_json() {
     let original = unsigned_tx();
     let json = serde_json::to_string(&original).unwrap();
-    let decoded: UnsignedTx = serde_json::from_str(&json).unwrap();
+    let decoded: EvmTx = serde_json::from_str(&json).unwrap();
     assert_eq!(original, decoded);
 }
 
@@ -32,16 +32,15 @@ fn unsigned_tx_round_trips_through_json() {
 fn signed_tx_round_trips_through_json() {
     let original = signed_tx();
     let json = serde_json::to_string(&original).unwrap();
-    let decoded: SignedTx = serde_json::from_str(&json).unwrap();
+    let decoded: SignedEvmTx = serde_json::from_str(&json).unwrap();
     assert_eq!(original, decoded);
 }
 
 #[test]
 fn signed_tx_survives_a_value_round_trip_too() {
-    // `crates/storage` stores state as a `serde_json::Value` column, not a
-    // string, so the `Value` round trip matters as much as the string one.
+    // Storage round-trips the state as a JSON value.
     let original = signed_tx();
     let value = serde_json::to_value(&original).unwrap();
-    let decoded: SignedTx = serde_json::from_value(value).unwrap();
+    let decoded: SignedEvmTx = serde_json::from_value(value).unwrap();
     assert_eq!(original, decoded);
 }

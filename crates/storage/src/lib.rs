@@ -1,5 +1,7 @@
+mod lock;
 mod strategy;
 
+pub use lock::LockFile;
 pub use strategy::{SqliteLevelStore, SqliteOrderStore};
 
 use std::path::Path;
@@ -24,7 +26,7 @@ pub struct SqliteAuditStore {
 }
 
 impl SqliteAuditStore {
-    /// Opens the database, creates a new process session, and invalidates active quotes from prior runs.
+    /// Opens storage, starts a session, and invalidates older active quotes.
     pub async fn open(path: impl AsRef<Path>, version: &str) -> Result<Self> {
         let pool = connect_pool(path.as_ref()).await?;
 
@@ -61,8 +63,7 @@ impl SqliteAuditStore {
         Ok(Self { pool, session_id })
     }
 
-    /// Opens the database for read-only administration without creating a
-    /// process session or invalidating active quotes in a running process.
+    /// Opens the database for administration without changing process state.
     pub async fn admin(path: impl AsRef<Path>) -> Result<Self> {
         Ok(Self {
             pool: connect_pool(path.as_ref()).await?,
@@ -147,9 +148,7 @@ impl AuditStore for SqliteAuditStore {
         request: &MarketResearchRequest,
         result: &MarketResearch,
     ) -> Result<()> {
-        // Persist market facts, but never vendor error bodies returned through the
-        // guard reason. Those can contain infrastructure details and are not useful
-        // for the durable decision trail.
+        // Do not persist vendor error bodies or infrastructure details.
         let durable_result = serde_json::json!({
             "pair": result.pair,
             "observations": result.observations,
@@ -339,13 +338,7 @@ fn now_i64() -> i64 {
         .as_secs() as i64
 }
 
-/// Opens the state database, creating it and applying every migration.
-///
-/// The returned pool enforces foreign keys and uses WAL, so callers that build
-/// their own stores over it get the same guarantees the audit store relies on.
-///
-/// Returns an error if the directory cannot be created, the file cannot be
-/// opened, or a migration fails.
+/// Opens or creates the WAL database with foreign keys and migrations.
 pub async fn connect_pool(path: &Path) -> Result<SqlitePool> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -361,9 +354,7 @@ pub async fn connect_pool(path: &Path) -> Result<SqlitePool> {
         .connect_with(options)
         .await
         .context("cannot open SQLite state")?;
-    // Every migration is idempotent, so they can all be replayed on each open.
-    // Keep them that way: a statement without an `IF NOT EXISTS` form, such as
-    // `ALTER TABLE ... ADD COLUMN`, would fail here on the second open.
+    // Migrations must remain safe to replay on every open.
     for migration in [
         include_str!("../migrations/0001_audit.sql"),
         include_str!("../migrations/0002_strategy.sql"),

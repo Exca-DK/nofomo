@@ -4,8 +4,7 @@ use futures::StreamExt;
 
 use crate::{PricePair, PriceSource, PriceStream, PriceTick, is_implausible, is_stale};
 
-/// Wraps a price source, dropping quotes that are too old or that moved further
-/// than a real market would.
+/// Drops stale or implausible quotes from a price source.
 pub struct FilteredSource<S> {
     inner: S,
     max_age_secs: i64,
@@ -23,20 +22,24 @@ impl<S> FilteredSource<S> {
 }
 
 impl<S: PriceSource> PriceSource for FilteredSource<S> {
+    // Support is decided by the wrapped source.
+    fn supports(&self, pair: &PricePair) -> bool {
+        self.inner.supports(pair)
+    }
+
     fn stream(&self, pair: &PricePair) -> PriceStream {
         let inner = self.inner.stream(pair);
         let max_age_secs = self.max_age_secs;
         let max_move_bps = self.max_move_bps;
 
-        // The previous price lives in the stream rather than in `self`: each
-        // call is for one pair and needs its own history.
+        // Each pair stream keeps its own previous price.
         let filtered = inner
             .scan(None::<f64>, move |previous, item| {
                 let decision = match item {
                     Err(error) => Some(Err(error)),
                     Ok(tick) => keep(tick, previous, max_age_secs, max_move_bps).map(Ok),
                 };
-                // Always `Some`, so a dropped quote never ends the stream.
+                // Dropped quotes do not end the stream.
                 futures::future::ready(Some(decision))
             })
             .filter_map(futures::future::ready);
@@ -44,9 +47,7 @@ impl<S: PriceSource> PriceSource for FilteredSource<S> {
     }
 }
 
-// Rejections are logged rather than dropped quietly: a feed that has frozen or
-// gone haywire rejects everything, which is indistinguishable from a flat market
-// unless it says so.
+// Log rejections so a broken feed is visible.
 fn keep(
     tick: PriceTick,
     previous: &mut Option<f64>,
@@ -70,8 +71,7 @@ fn keep(
             next = tick.price_usd,
             "dropping implausible price move"
         );
-        // `previous` is deliberately left alone: one bad quote must not become
-        // the baseline that rejects every good one after it.
+        // A rejected quote must not become the new baseline.
         return None;
     }
     *previous = Some(tick.price_usd);

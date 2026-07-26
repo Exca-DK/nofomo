@@ -23,10 +23,7 @@ impl VenueName {
 impl std::str::FromStr for VenueName {
     type Err = anyhow::Error;
 
-    /// Parses the stable wire and SQLite representation produced by [`VenueName::as_str`].
-    ///
-    /// Returns an error for any other value so a corrupted row fails loudly
-    /// instead of silently trading on the wrong venue.
+    /// Parses [`VenueName::as_str`] output, rejecting unknown values.
     fn from_str(value: &str) -> anyhow::Result<Self> {
         match value {
             "uniswap" => Ok(Self::Uniswap),
@@ -130,9 +127,7 @@ pub struct QuoteDraft {
     pub plan: ExecutionPlan,
 }
 
-// Deserialize is required so a stored plan can be replayed after a restart:
-// execution now spans several persisted steps. No `Eq`, because the embedded
-// venue quote is a `serde_json::Value`.
+// Stored plans must deserialize after restart. The JSON quote prevents `Eq`.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum ExecutionPlan {
     Uniswap {
@@ -148,6 +143,16 @@ pub enum ExecutionPlan {
         input_amount: u64,
         min_amount_out: u64,
     },
+}
+
+impl ExecutionPlan {
+    /// Chain used for node lookup and signing.
+    pub fn chain(&self) -> crate::ChainId {
+        match self {
+            Self::Uniswap { chain_id, .. } => crate::ChainId::Evm(*chain_id),
+            Self::Cetus { .. } => crate::ChainId::Sui,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -193,16 +198,14 @@ pub fn unix_now_nanos() -> u128 {
         .as_nanos()
 }
 
-/// Parses a human decimal string into u64 base units.
-/// Returns an error if amount is invalid, non-positive, or exceeds u64 max.
+/// Parses a positive decimal amount into `u64` base units.
 pub fn parse_units(value: &str, decimals: u8) -> anyhow::Result<u64> {
     let raw = parse_units_string(value, decimals)?;
     raw.parse::<u64>()
         .map_err(|_| anyhow::anyhow!("amount must fit in a non-zero u64 base-unit value"))
 }
 
-/// Parses a human decimal string into base units avoiding floating point precision loss.
-/// Returns an error if amount is invalid or exceeds uint256 max.
+/// Parses a decimal amount into base units without floating-point loss.
 pub fn parse_units_string(value: &str, decimals: u8) -> anyhow::Result<String> {
     let value = value.trim();
     if value.is_empty() || value.starts_with('-') || value.starts_with('+') {
@@ -235,8 +238,7 @@ pub fn format_units(raw: u64, decimals: u8) -> String {
     format_units_string(&raw.to_string(), decimals).expect("u64 is valid decimal base units")
 }
 
-/// Formats base units into a human decimal string without float math.
-/// Returns an error if raw string contains non-digits.
+/// Formats decimal base units without floating-point math.
 pub fn format_units_string(raw: &str, decimals: u8) -> anyhow::Result<String> {
     if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
         anyhow::bail!("base units must be an unsigned decimal integer");
@@ -263,8 +265,7 @@ pub fn format_units_string(raw: &str, decimals: u8) -> anyhow::Result<String> {
     }
 }
 
-/// Calculates minimum expected output after deducting basis points slippage.
-/// Returns an error if slippage exceeds 5000 basis points.
+/// Applies up to 5000 basis points of slippage.
 pub fn apply_slippage(raw: u64, slippage_bps: u16) -> anyhow::Result<u64> {
     if slippage_bps > 5_000 {
         anyhow::bail!("slippage_bps must not exceed 5000");
@@ -272,8 +273,7 @@ pub fn apply_slippage(raw: u64, slippage_bps: u16) -> anyhow::Result<u64> {
     Ok(((u128::from(raw) * u128::from(10_000 - slippage_bps)) / 10_000) as u64)
 }
 
-/// Deducts slippage from large integer base units string.
-/// Returns an error if slippage exceeds 10000 basis points.
+/// Applies up to 10000 basis points of slippage to decimal base units.
 pub fn apply_slippage_string(raw: &str, slippage_bps: u16) -> anyhow::Result<String> {
     if slippage_bps > 10_000 {
         anyhow::bail!("slippage_bps must not exceed 10000");

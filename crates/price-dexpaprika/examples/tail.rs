@@ -1,7 +1,4 @@
-//! Prints a few live quotes so the SSE path can be checked against the real
-//! feed, which no test double can do.
-//!
-//! cargo run -p tempo-agentic-price-dexpaprika --example tail
+// Run: cargo run -p tempo-agentic-price-dexpaprika --example tail
 
 use futures::StreamExt;
 use tempo_agentic_price::{
@@ -34,8 +31,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(tick) => println!("{} USD  published_at={}", tick.price_usd, tick.published_at),
             Err(error) => {
                 eprintln!("stream error: {error}");
-                // The top-level reqwest message says only "error sending
-                // request"; the cause is one level down.
+                // Print the useful cause hidden by reqwest's top-level error.
                 for cause in error.chain().skip(1) {
                     eprintln!("  caused by: {cause}");
                 }

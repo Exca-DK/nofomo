@@ -1,27 +1,25 @@
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use tempo_agentic_chain::EvmChainClient;
+use tempo_agentic_cetus::CetusVenue;
+use tempo_agentic_chain::{EvmChainClient, SuiChainClient};
 use tempo_agentic_config::Config;
-use tempo_agentic_domain::{ChainClient, Signer, TradeVenue};
+use tempo_agentic_domain::{ChainClient, ChainFamily, ChainId, EvmNode, Signer, TradeVenue};
 use tempo_agentic_graph::GraphClient;
 use tempo_agentic_orchestrator::ExecDeps;
 use tempo_agentic_strategy::{LevelStore, OrderStore};
 use tempo_agentic_trigger::{TokenResolver, TriggerDeps};
 use tempo_agentic_uniswap::UniswapVenue;
-use tempo_agentic_vault::EvmSigner;
+
+use crate::keystore;
 
 pub struct Wiring {
     pub exec: ExecDeps,
     pub trigger: TriggerDeps,
 }
 
-/// Turns configuration into the implementations the two loops run on.
-///
-/// Returns an error if the graph client, a chain RPC URL, or the keystore cannot
-/// be initialized.
+/// Builds runtime dependencies from configuration.
 pub fn build(
     config: &Config,
     allow_broadcast: bool,
@@ -30,28 +28,40 @@ pub fn build(
 ) -> Result<Wiring> {
     let graph = GraphClient::new(&config.graph)?;
 
-    let mut chains: HashMap<u64, Arc<dyn ChainClient>> = HashMap::new();
+    // EVM clients also serve venue reads.
+    let mut chains: HashMap<ChainId, Arc<dyn ChainClient>> = HashMap::new();
+    let mut evm_nodes: HashMap<u64, Arc<dyn EvmNode>> = HashMap::new();
     for chain in &config.evm.chains {
-        let client = EvmChainClient::new(&chain.rpc_url, chain.chain_id)
-            .with_context(|| format!("cannot build a chain client for {}", chain.name))?;
-        chains.insert(chain.chain_id, Arc::new(client));
+        let client = Arc::new(
+            EvmChainClient::new(&chain.rpc_url, chain.chain_id)
+                .with_context(|| format!("cannot build a chain client for {}", chain.name))?,
+        );
+        chains.insert(ChainId::Evm(chain.chain_id), client.clone());
+        evm_nodes.insert(chain.chain_id, client);
     }
 
-    // Decrypted once at startup rather than per transaction, so scrypt never runs
-    // on the async runtime mid-trade.
-    let signer: Arc<dyn Signer> = Arc::new(EvmSigner::from_keystore(
-        Path::new(&config.evm.keystore_path),
-        Path::new(&config.evm.password_file),
-    )?);
+    // Load keys once; downstream code stays file-free.
+    let signer: Arc<dyn Signer> = Arc::new(keystore::load_vault(config)?);
 
-    let venues: Vec<Arc<dyn TradeVenue>> = vec![Arc::new(UniswapVenue::new(
+    let mut venues: Vec<Arc<dyn TradeVenue>> = vec![Arc::new(UniswapVenue::new(
         &config.uniswap,
         &config.evm,
-        signer.address().to_string(),
-        chains.clone(),
+        signer.address(ChainFamily::Evm)?.to_string(),
+        evm_nodes,
         graph,
         config.max_slippage_bps,
     )?)];
+
+    if config.sui.enabled {
+        chains.insert(
+            ChainId::Sui,
+            Arc::new(
+                SuiChainClient::new(&config.sui.rpc_url, config.sui.gas_budget)
+                    .context("cannot build the Sui chain client")?,
+            ),
+        );
+        venues.push(Arc::new(CetusVenue::new(&config.sui, signer.clone())?));
+    }
 
     Ok(Wiring {
         exec: ExecDeps {

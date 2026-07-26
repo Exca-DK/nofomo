@@ -1,7 +1,5 @@
-pub mod admin;
-pub mod lock;
+pub mod keystore;
 pub mod logging;
-pub mod prices;
 pub mod wiring;
 
 use std::path::{Path, PathBuf};
@@ -10,27 +8,21 @@ use std::time::Duration;
 
 use anyhow::Result;
 use tempo_agentic_config::Config;
-use tempo_agentic_mcp::AdminHandler;
+use tempo_agentic_mcp::{AdminHandler, AdminServer, manifest_path};
 use tempo_agentic_orchestrator::Waker;
 use tempo_agentic_price::{
     DEFAULT_MAX_AGE_SECS, DEFAULT_MAX_MOVE_BPS, FilteredSource, PriceSource,
 };
 use tempo_agentic_price_dexpaprika::DexPaprikaSource;
-use tempo_agentic_storage::{SqliteLevelStore, SqliteOrderStore, connect_pool};
+use tempo_agentic_storage::{LockFile, SqliteLevelStore, SqliteOrderStore, connect_pool};
 use tempo_agentic_strategy::OrderStore;
 use tempo_agentic_trigger::TokenResolver;
 use tokio::sync::mpsc;
 
-use crate::admin::AdminServer;
-use crate::lock::LockFile;
-
-/// How long the execution loop sleeps when nothing wakes it. Orders waiting on a
-/// receipt need re-checking even when no new one arrives.
+/// Maximum execution-loop sleep between receipt checks.
 const ORCHESTRATOR_POLL: Duration = Duration::from_secs(5);
 
-/// Ticks that may queue before the feed is held back. Bounded on purpose: a
-/// pre-flight is slower than the feed, and stale quotes are worth less than
-/// steady memory.
+/// Tick queue limit before feed backpressure.
 const TICK_CHANNEL: usize = 256;
 
 pub struct Options {
@@ -40,10 +32,7 @@ pub struct Options {
     pub allow_broadcast: bool,
 }
 
-/// Runs the daemon until a shutdown signal arrives.
-///
-/// Returns an error if the configuration, the log directory, the lock, or the
-/// database cannot be opened.
+/// Starts the daemon and runs until shutdown.
 pub async fn run(options: Options) -> Result<()> {
     let config = Config::load(&options.config)?;
     let database = PathBuf::from(&config.state_db_path);
@@ -52,8 +41,7 @@ pub async fn run(options: Options) -> Result<()> {
         .clone()
         .unwrap_or_else(|| database.parent().unwrap_or(Path::new(".")).to_path_buf());
 
-    // Installed before the lock so a refusal to start is recorded rather than
-    // only printed.
+    // Install logging early enough to record lock failures.
     let _logs = logging::install(&log_dir)?;
     let _lock = LockFile::acquire(LockFile::path_for(&database))?;
 
@@ -95,20 +83,20 @@ pub async fn run(options: Options) -> Result<()> {
             config.evm.clone(),
             config.max_slippage_bps,
             options.allow_broadcast,
+            source.clone(),
         ),
         &database,
     )
     .await?;
     tracing::info!(
         url = %admin.url,
-        manifest = %admin::manifest_path(&database).display(),
+        manifest = %manifest_path(&database).display(),
         "admin MCP surface listening; the manifest holds the bearer token"
     );
 
     let (ticks_tx, ticks_rx) = mpsc::channel(TICK_CHANNEL);
     let waker = Arc::new(Waker::default());
-    // The trigger only ever wakes the loop; waiting on it belongs to the loop
-    // that consumes the work.
+    // Only the order loop may wait on its waker.
     let notifier = waker.notifier();
 
     let orchestrator = tokio::spawn(tempo_agentic_orchestrator::run(
@@ -117,7 +105,7 @@ pub async fn run(options: Options) -> Result<()> {
         waker,
         ORCHESTRATOR_POLL,
     ));
-    let producer = tokio::spawn(prices::produce(
+    let producer = tokio::spawn(tempo_agentic_trigger::produce(
         levels,
         TokenResolver::from_config(&config.evm),
         source,
@@ -137,11 +125,7 @@ pub async fn run(options: Options) -> Result<()> {
     Ok(())
 }
 
-/// Resolves on Ctrl-C, or on `SIGTERM` where there is one.
-///
-/// `SIGTERM` matters because that is what a service manager or `docker stop`
-/// sends; without it the process would only ever be killed outright, and the
-/// lock file would survive.
+/// Waits for Ctrl-C or `SIGTERM`.
 pub async fn shutdown_signal() {
     let interrupt = async {
         let _ = tokio::signal::ctrl_c().await;

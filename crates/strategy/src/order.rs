@@ -30,30 +30,22 @@ impl OrderStatus {
     }
 }
 
-/// Execution progress of an [`Order`]. Each variant carries exactly what a
-/// restarted daemon needs to resume from that point, so a crash never leaves
-/// funds somewhere the next run cannot find them.
-///
-/// The lending variants (`Withdrawing`, `Depositing`) and `SwapQuarantined`
-/// exist ahead of the lending work so adding it later needs no migration.
+/// Restart-safe execution progress for an [`Order`].
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "phase", rename_all = "snake_case")]
 pub enum OrderState {
-    /// Pulling the spend amount out of a lending position before the swap can
-    /// be signed.
+    /// Withdrawing the spend amount before the swap.
     Withdrawing {
         amount_in: U256,
         action_id: String,
     },
-    /// Funds are in hand and `step` can be signed. `withdraw_action_id` is
-    /// `None` when no lending withdraw was needed.
+    /// Funds are ready and `step` can be signed.
     SwapReady {
         step: ExecStep,
         amount_in: U256,
         withdraw_action_id: Option<String>,
     },
-    /// Signed and persisted before broadcast. A crash here re-broadcasts the
-    /// same bytes with the same nonce, so at most one transaction lands.
+    /// Signed and persisted before broadcast for safe replay.
     Broadcasting {
         step: ExecStep,
         amount_in: U256,
@@ -67,9 +59,11 @@ pub enum OrderState {
         amount_in: U256,
         tx_hash: String,
         withdraw_action_id: Option<String>,
+        /// Broadcast time; old rows default to overdue.
+        #[serde(default)]
+        submitted_at: i64,
     },
-    /// The swap filled and the proceeds are being deposited into a lending
-    /// position.
+    /// Depositing swap proceeds.
     Depositing {
         tx_hash: String,
         amount: U256,
@@ -82,23 +76,16 @@ pub enum OrderState {
         tx_hash: Option<String>,
         reason: String,
     },
-    /// The swap exhausted its retries. The level stays blocked until an operator
-    /// resolves it, so a rule that keeps failing cannot spend more gas.
+    /// Retries exhausted; blocks the level until an operator resolves it.
     SwapQuarantined {
         amount_in: U256,
-        /// The transaction whose broadcast never confirmed as sent. An operator
-        /// needs it to check whether the bytes landed after all.
+        /// Transaction whose broadcast was never confirmed.
         tx_hash: Option<String>,
         reason: String,
     },
 }
 
-/// One execution attempt for a [`Level`] that fired.
-///
-/// The venue, chain, and token pair are snapshotted at creation so editing or
-/// deleting the level later cannot change what this order already committed.
-///
-/// No `Eq`: the embedded plan carries a `serde_json::Value`.
+/// A snapshotted execution attempt for a fired [`Level`].
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Order {
     pub id: String,
@@ -109,24 +96,18 @@ pub struct Order {
     pub token_out: String,
     /// Base units of `token_in` this order committed, snapshotted at creation.
     pub reserved_amount: U256,
-    /// The execution plan decided when the order was created. A restarted
-    /// process rebuilds every transaction from it, so it has to survive the
-    /// round trip through storage.
+    /// Persisted plan used to rebuild transactions after restart.
     pub plan: ExecutionPlan,
     pub state: OrderState,
     /// Swap attempts the order has burned. Inert until the retry transitions land.
     pub swap_attempts: u32,
-    /// Earliest unix second a swap retry may run. Inert until the retry
-    /// transitions land.
+    /// Earliest Unix second a swap retry may run.
     pub swap_retry_after_ts: Option<i64>,
     pub created_at: i64,
 }
 
 impl Order {
-    /// Creates a fresh order from a fired level, ready for its first step.
-    ///
-    /// Starts on [`ExecStep::Swap`]; the orchestrator re-derives the real step
-    /// sequence from the venue, which may prepend allowance transactions.
+    /// Creates an order; the venue may later prepend allowance steps.
     pub fn new(id: String, level: &Level, plan: ExecutionPlan, created_at: i64) -> Self {
         Self {
             id,

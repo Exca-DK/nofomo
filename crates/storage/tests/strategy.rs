@@ -106,16 +106,14 @@ async fn every_order_state_round_trips_with_exact_amounts() {
     let fixture = Fixture::new("state-roundtrip").await;
     fixture.levels.upsert_level(&level()).await.unwrap();
 
-    // A value whose decimal and hex readings differ wildly, so an encoding
-    // mix-up between the scalar column and the state JSON cannot pass.
+    // Make decimal/hex encoding mix-ups obvious.
     let amount_in = U256::from(1_000u64);
     let states = [
         OrderState::Withdrawing {
             amount_in,
             action_id: "act-1".into(),
         },
-        // Every step appears at least once: a resumed order has to know which
-        // transaction it was on, not merely which phase.
+        // Cover every transaction step restored after restart.
         OrderState::SwapReady {
             step: ExecStep::Cancel,
             amount_in,
@@ -138,6 +136,7 @@ async fn every_order_state_round_trips_with_exact_amounts() {
             amount_in,
             tx_hash: "0xhash".into(),
             withdraw_action_id: None,
+            submitted_at: 1_700_000_042,
         },
         OrderState::Depositing {
             tx_hash: "0xhash".into(),
@@ -177,9 +176,7 @@ async fn every_order_state_round_trips_with_exact_amounts() {
     fixture.cleanup();
 }
 
-// Locks the encoding split the schema comment warns about: the scalar column
-// is decimal, but U256 nested in the state JSON is 0x-prefixed hex. Reading
-// one as the other would silently mis-size an order.
+// Scalar U256 is decimal while state JSON is hex.
 #[tokio::test]
 async fn scalar_amounts_are_decimal_and_state_amounts_are_hex() {
     let fixture = Fixture::new("encoding").await;
@@ -241,8 +238,7 @@ async fn the_execution_plan_survives_the_round_trip() {
 
     let loaded = fixture.orders.get_order("o-1").await.unwrap().unwrap();
     assert_eq!(loaded.plan, plan());
-    // The embedded venue quote is opaque JSON; it has to come back byte-for-byte
-    // or a resumed swap would be rebuilt from a different route.
+    // Preserve the opaque venue quote exactly.
     let ExecutionPlan::Uniswap { quote, .. } = &loaded.plan else {
         panic!("expected a Uniswap plan");
     };
@@ -250,8 +246,7 @@ async fn the_execution_plan_survives_the_round_trip() {
     fixture.cleanup();
 }
 
-// An order whose plan will not deserialize cannot be resumed, so reading it must
-// fail rather than hand back something that looks executable.
+// Reject plans that cannot be resumed.
 #[tokio::test]
 async fn an_order_without_a_usable_plan_is_an_error() {
     let fixture = Fixture::new("empty-plan").await;

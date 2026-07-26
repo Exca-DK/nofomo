@@ -10,20 +10,14 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use tempo_agentic_domain::{SignedTx, Signer, UnsignedTx};
 
-/// EVM signer holding a key decrypted once at startup.
-///
-/// Decrypting per transaction would run scrypt on the async runtime for every
-/// signature, so the cost is paid once here instead.
+/// EVM signer with a key decrypted once at startup.
 pub struct EvmSigner {
     signer: PrivateKeySigner,
     address: String,
 }
 
 impl EvmSigner {
-    /// Decrypts a Foundry keystore with the password stored in `password_file`.
-    ///
-    /// Returns an error if either file cannot be read or the keystore does not
-    /// decrypt to a valid key.
+    /// Decrypts a Foundry keystore using `password_file`.
     pub fn from_keystore(keystore_path: &Path, password_file: &Path) -> Result<Self> {
         let password = std::fs::read_to_string(password_file)
             .with_context(|| format!("cannot read password file {}", password_file.display()))?;
@@ -73,8 +67,7 @@ impl Signer for EvmSigner {
             .context("signing failed")?;
         let envelope = TxEnvelope::Eip1559(unsigned.into_signed(signature));
 
-        // Both values come from the signed bytes alone, so they can be persisted
-        // before the transaction is ever sent.
+        // Signed bytes determine both values before broadcast.
         Ok(SignedTx {
             raw: format!("0x{}", hex_encode(&envelope.encoded_2718())),
             hash: format!("{:#x}", envelope.tx_hash()),

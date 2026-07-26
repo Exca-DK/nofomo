@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tempo_agentic_daemon::lock::LockFile;
+use tempo_agentic_storage::LockFile;
 
 fn scratch(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
-        "tempo-agentic-daemon-{name}-{}-{}.lock",
+        "tempo-agentic-storage-{name}-{}-{}.lock",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -14,8 +14,7 @@ fn scratch(name: &str) -> PathBuf {
     ))
 }
 
-// Two daemons on one database would quote the same levels side by side and start
-// a second order for every rule that fires.
+// One database must not run two daemons.
 #[test]
 fn a_second_claim_on_the_same_database_is_refused() {
     let path = scratch("busy");

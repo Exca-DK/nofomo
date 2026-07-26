@@ -1,10 +1,10 @@
 use alloy_primitives::U256;
-use tempo_agentic_domain::{ExecStep, ExecutionPlan, SignedTx, VenueName};
+use tempo_agentic_domain::{ExecStep, ExecutionPlan, VenueName};
 use tempo_agentic_strategy::{Level, Order, OrderState, Side};
 
 use tempo_agentic_orchestrator::{
-    Action, Outcome, SWAP_RETRY_CAP, SWAP_RETRY_MAX_BACKOFF_SECS, apply, next_action,
-    swap_retry_backoff_secs,
+    Action, Outcome, RECEIPT_DEADLINE_SECS, SWAP_RETRY_CAP, SWAP_RETRY_MAX_BACKOFF_SECS, apply,
+    next_action, swap_retry_backoff_secs,
 };
 
 const AMOUNT: u64 = 1_000_000;
@@ -48,6 +48,7 @@ fn submitted(step: ExecStep) -> OrderState {
         amount_in: U256::from(AMOUNT),
         tx_hash: "0xabc".into(),
         withdraw_action_id: None,
+        submitted_at: 0,
     }
 }
 
@@ -61,12 +62,8 @@ fn broadcasting() -> OrderState {
     }
 }
 
-fn signed() -> SignedTx {
-    SignedTx {
-        raw: "0x02f8".into(),
-        hash: "0xdef".into(),
-    }
-}
+const SIGNED_TX: &str = "0x02f8";
+const TX_HASH: &str = "0xdef";
 
 #[test]
 fn every_state_asks_for_its_own_action() {
@@ -82,7 +79,10 @@ fn every_state_asks_for_its_own_action() {
             tx_hash: "0xdef".into(),
             withdraw_action_id: None,
         })),
-        Action::Broadcast { signed: signed() }
+        Action::Broadcast {
+            signed_tx: SIGNED_TX.into(),
+            tx_hash: TX_HASH.into(),
+        }
     );
     assert_eq!(
         next_action(&order(submitted(ExecStep::Swap))),
@@ -108,8 +108,7 @@ fn every_state_asks_for_its_own_action() {
     }
 }
 
-// The step the venue actually signed is what gets recorded, not the hint the
-// order was carrying.
+// Record the step actually signed.
 #[test]
 fn signing_records_the_step_the_venue_chose() {
     let order = order(swap_ready(ExecStep::Swap));
@@ -117,7 +116,8 @@ fn signing_records_the_step_the_venue_chose() {
         &order,
         Outcome::Signed {
             step: ExecStep::Approval,
-            signed: signed(),
+            signed_tx: SIGNED_TX.into(),
+            tx_hash: TX_HASH.into(),
         },
     )
     .unwrap()
@@ -147,6 +147,7 @@ fn broadcasting_moves_to_submitted_keeping_the_step() {
         &order,
         Outcome::Broadcast {
             tx_hash: "0xdef".into(),
+            at: 1_700_000_042,
         },
     )
     .unwrap()
@@ -158,6 +159,7 @@ fn broadcasting_moves_to_submitted_keeping_the_step() {
             amount_in: U256::from(AMOUNT),
             tx_hash: "0xdef".into(),
             withdraw_action_id: None,
+            submitted_at: 1_700_000_042,
         }
     );
 }
@@ -173,8 +175,7 @@ fn a_confirmed_swap_fills_the_order() {
     );
 }
 
-// An allowance is not the trade: confirming one only returns the order to
-// signing, where the venue names whatever is left.
+// A confirmed allowance returns to step discovery.
 #[test]
 fn a_confirmed_allowance_goes_back_to_signing() {
     for step in [ExecStep::Cancel, ExecStep::Approval] {
@@ -198,8 +199,7 @@ fn a_revert_fails_the_order_and_keeps_the_hash() {
     );
 }
 
-// Nothing was signed yet, so nothing is at stake and no hash exists to record.
-// Ending here is what lets the level fire again with a fresh quote.
+// A pre-signing failure frees the level without a hash.
 #[test]
 fn a_failure_before_signing_ends_the_order_without_a_hash() {
     let before = order(swap_ready(ExecStep::Swap));
@@ -219,8 +219,7 @@ fn a_failure_before_signing_ends_the_order_without_a_hash() {
     );
 }
 
-// Holding the state is the whole mechanism: `next_action` reads `Broadcasting`
-// again and hands back the very same bytes.
+// Unchanged `Broadcasting` state retries identical bytes.
 #[test]
 fn a_refused_send_holds_the_state_so_the_same_bytes_go_again() {
     let mut order = order(broadcasting());
@@ -316,7 +315,8 @@ fn an_outcome_that_cannot_follow_the_state_is_rejected() {
         apply(
             &filled,
             Outcome::Broadcast {
-                tx_hash: "0xdef".into()
+                tx_hash: "0xdef".into(),
+                at: 1_700_000_042,
             }
         )
         .is_err()
@@ -336,16 +336,13 @@ fn the_backoff_doubles_and_then_holds() {
     );
 }
 
-// The count is raised before the delay is read, so zero never reaches here. It
-// still has to answer with a real pause rather than none.
+// The first post-failure attempt still gets a delay.
 #[test]
 fn a_zero_attempt_count_still_pauses() {
     assert_eq!(swap_retry_backoff_secs(0), 2);
 }
 
-// Nothing left the process, so there is no hash and nothing to retry — a resend
-// would be refused the same way. `Failed` frees the level to try the whole path
-// again after its rest.
+// A blocked send has no hash to retry and frees the level.
 #[test]
 fn a_blocked_broadcast_ends_the_order_without_a_hash() {
     assert_eq!(
@@ -368,4 +365,50 @@ fn blocking_something_that_was_not_being_sent_is_rejected() {
     .unwrap_err();
     assert_eq!(error.state, "SwapReady");
     assert_eq!(error.outcome, "BroadcastBlocked");
+}
+
+// Receipt timeout frees the level but keeps the uncertain hash.
+#[test]
+fn a_receipt_that_never_arrives_ends_the_order() {
+    let released = apply(&order(submitted(ExecStep::Swap)), Outcome::ReceiptTimedOut)
+        .unwrap()
+        .unwrap();
+    let OrderState::Failed { tx_hash, reason } = &released else {
+        panic!("expected a failed order, got {released:?}");
+    };
+    assert_eq!(tx_hash.as_deref(), Some("0xabc"));
+    assert!(
+        reason.contains("may still land"),
+        "the reason has to warn that this is not proof of death: {reason}"
+    );
+    assert!(
+        reason.contains(&(RECEIPT_DEADLINE_SECS / 60).to_string()),
+        "and say how long we waited: {reason}"
+    );
+}
+
+#[test]
+fn a_timeout_makes_no_sense_before_anything_was_sent() {
+    let error = apply(&order(swap_ready(ExecStep::Swap)), Outcome::ReceiptTimedOut).unwrap_err();
+    assert_eq!(error.state, "SwapReady");
+    assert_eq!(error.outcome, "ReceiptTimedOut");
+}
+
+// Preserve the broadcast time used by the deadline.
+#[test]
+fn broadcasting_records_when_the_bytes_went_out() {
+    let order = order(broadcasting());
+    let next = apply(
+        &order,
+        Outcome::Broadcast {
+            tx_hash: "0xdef".into(),
+            at: 1_700_000_042,
+        },
+    )
+    .unwrap()
+    .unwrap();
+    let OrderState::Submitted { submitted_at, .. } = next else {
+        panic!("expected a submitted order");
+    };
+    assert_eq!(submitted_at, 1_700_000_042);
 }
