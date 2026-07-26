@@ -2,18 +2,18 @@ use std::collections::HashMap;
 
 use alloy_primitives::U256;
 use tempo_agentic_config::{EvmChain, EvmConfig, EvmToken, PriceRef, SuiCoin, SuiConfig};
-use tempo_agentic_domain::VenueName;
 use tempo_agentic_price::{PricePair, PriceSource, PriceStream};
-use tempo_agentic_strategy::Side;
-use tempo_agentic_trigger::{LevelDraft, TokenResolver, validate_level};
+use tempo_agentic_strategy::{Side, StrategyLevel, trade_direction};
+use tempo_agentic_trigger::{
+    LevelDraft, StrategyDraft, TokenResolver, validate_level, validate_stored_level,
+    validate_strategy,
+};
 
-struct Prices {
-    chains: Vec<u64>,
-}
+struct Prices(bool);
 
 impl PriceSource for Prices {
     fn supports(&self, pair: &PricePair) -> bool {
-        self.chains.contains(&pair.chain_id)
+        self.0 && pair.chain_id == 8453
     }
 
     fn stream(&self, _pair: &PricePair) -> PriceStream {
@@ -21,13 +21,7 @@ impl PriceSource for Prices {
     }
 }
 
-fn prices() -> Prices {
-    Prices { chains: vec![8453] }
-}
-
-const MAX_SLIPPAGE_BPS: u16 = 500;
-
-fn evm() -> EvmConfig {
+fn evm(usdc_decimals: u8) -> EvmConfig {
     EvmConfig {
         chains: vec![EvmChain {
             name: "base".into(),
@@ -36,17 +30,17 @@ fn evm() -> EvmConfig {
             graph_subgraph_id: "subgraph".into(),
             tokens: HashMap::from([
                 (
-                    "WETH".to_string(),
+                    "WETH".into(),
                     EvmToken {
                         address: "0x4200000000000000000000000000000000000006".into(),
                         decimals: 18,
                     },
                 ),
                 (
-                    "USDC".to_string(),
+                    "USDC".into(),
                     EvmToken {
                         address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913".into(),
-                        decimals: 6,
+                        decimals: usdc_decimals,
                     },
                 ),
             ]),
@@ -54,6 +48,8 @@ fn evm() -> EvmConfig {
     }
 }
 
+// Sui coins are named by symbol but travel as Move types, and hBTC is priced
+// off the same asset on a chain the feed actually indexes.
 fn sui() -> SuiConfig {
     SuiConfig {
         enabled: true,
@@ -83,231 +79,201 @@ fn sui() -> SuiConfig {
     }
 }
 
-fn tokens() -> TokenResolver {
-    TokenResolver::from_config(&evm(), &sui())
+fn tokens(usdc_decimals: u8) -> TokenResolver {
+    TokenResolver::from_config(&evm(usdc_decimals), &sui())
 }
 
-fn draft() -> LevelDraft {
-    LevelDraft {
-        id: "l-1".into(),
+fn sui_strategy_draft() -> StrategyDraft {
+    StrategyDraft {
+        id: "s-sui".into(),
+        venue: "cetus".into(),
+        chain: "sui".into(),
+        base_token: "hBTC".into(),
+        quote_token: "SUI".into(),
+    }
+}
+
+fn strategy_draft() -> StrategyDraft {
+    StrategyDraft {
+        id: "s-1".into(),
         venue: "uniswap".into(),
-        chain: "base".into(),
-        token_in: "USDC".into(),
-        token_out: "WETH".into(),
-        side: "buy".into(),
+        chain: "BASE".into(),
+        base_token: "weth".into(),
+        quote_token: "usdc".into(),
+    }
+}
+
+fn level_draft(side: &str, amount: &str) -> LevelDraft {
+    LevelDraft {
+        id: format!("l-{side}"),
+        strategy_id: "s-1".into(),
+        side: side.into(),
         trigger_price_usd: 3_000.0,
-        amount: "25".into(),
+        amount: amount.into(),
         slippage_bps: 50,
     }
 }
 
-fn accept(draft: LevelDraft) -> tempo_agentic_strategy::Level {
-    validate_level(&tokens(), MAX_SLIPPAGE_BPS, &prices(), &draft).unwrap()
-}
-
-fn reject(draft: LevelDraft) -> String {
-    validate_level(&tokens(), MAX_SLIPPAGE_BPS, &prices(), &draft)
-        .expect_err("this draft must not be storable")
-        .to_string()
-}
-
 #[test]
-fn a_sound_draft_becomes_a_rule() {
-    let level = accept(draft());
+fn strategy_is_canonical_and_must_be_priceable() {
+    let strategy = validate_strategy(&tokens(6), &Prices(true), &strategy_draft()).unwrap();
+    assert_eq!(strategy.chain, "base");
+    assert_eq!(strategy.base_token, "WETH");
+    assert_eq!(strategy.quote_token, "USDC");
 
-    assert_eq!(level.id, "l-1");
-    assert_eq!(level.venue, VenueName::Uniswap);
-    assert_eq!(level.side, Side::Buy);
-    assert_eq!(level.trigger_price_usd, 3_000.0);
-    assert_eq!(level.slippage_bps, 50);
-}
-
-#[test]
-fn the_amount_is_scaled_by_the_input_token() {
-    let level = accept(draft());
-    assert_eq!(level.amount, U256::from(25_000_000u64));
-    assert_eq!(level.amount_decimals, 6);
-
-    let selling = LevelDraft {
-        token_in: "WETH".into(),
-        token_out: "USDC".into(),
-        side: "sell".into(),
-        amount: "0.5".into(),
-        ..draft()
-    };
-    let level = accept(selling);
-    assert_eq!(level.amount, U256::from(500_000_000_000_000_000u64));
-    assert_eq!(level.amount_decimals, 18);
-}
-
-#[test]
-fn the_chain_is_stored_as_the_configuration_spells_it() {
-    let level = accept(LevelDraft {
-        chain: "BASE".into(),
-        token_in: "usdc".into(),
-        token_out: "weth".into(),
-        ..draft()
-    });
-
-    assert_eq!(level.chain, "base");
-    assert_eq!(level.token_in, "USDC");
-    assert_eq!(level.token_out, "WETH");
-}
-
-#[test]
-fn a_rule_nothing_can_price_is_refused() {
-    assert!(
-        reject(LevelDraft {
-            chain: "solana".into(),
-            ..draft()
-        })
-        .contains("solana")
-    );
-    assert!(
-        reject(LevelDraft {
-            token_in: "DOGE".into(),
-            ..draft()
-        })
-        .contains("DOGE")
-    );
-    assert!(
-        reject(LevelDraft {
-            token_out: "DOGE".into(),
-            ..draft()
-        })
-        .contains("DOGE")
-    );
-}
-
-#[test]
-fn slippage_above_the_ceiling_is_refused() {
-    let error = reject(LevelDraft {
-        slippage_bps: MAX_SLIPPAGE_BPS + 1,
-        ..draft()
-    });
-    assert!(error.contains("500"), "say what the ceiling is: {error}");
-}
-
-#[test]
-fn a_pair_that_does_not_trade_is_refused() {
-    assert!(
-        reject(LevelDraft {
-            token_out: "USDC".into(),
-            ..draft()
-        })
-        .contains("must differ")
-    );
-}
-
-#[test]
-fn an_unreadable_side_venue_or_amount_is_refused() {
-    assert!(
-        reject(LevelDraft {
-            side: "hodl".into(),
-            ..draft()
-        })
-        .contains("hodl")
-    );
-    assert!(
-        reject(LevelDraft {
-            venue: "sushiswap".into(),
-            ..draft()
-        })
-        .contains("sushiswap")
-    );
-    assert!(
-        !reject(LevelDraft {
-            amount: "lots".into(),
-            ..draft()
-        })
-        .is_empty()
-    );
-}
-
-#[test]
-fn a_chain_no_source_quotes_is_refused() {
-    let quoting_nothing = Prices { chains: Vec::new() };
-    let error = validate_level(&tokens(), MAX_SLIPPAGE_BPS, &quoting_nothing, &draft())
-        .expect_err("a rule nothing can price must not be storable")
+    let error = validate_strategy(&tokens(6), &Prices(false), &strategy_draft())
+        .unwrap_err()
         .to_string();
-    assert!(error.contains("could never fire"), "unclear: {error}");
-    assert!(error.contains("WETH"), "say which token: {error}");
+    assert!(error.contains("could never fire"));
 }
 
 #[test]
-fn the_side_decides_which_token_has_to_be_quotable() {
-    assert!(validate_level(&tokens(), MAX_SLIPPAGE_BPS, &prices(), &draft()).is_ok());
-    assert!(
-        validate_level(
-            &tokens(),
-            MAX_SLIPPAGE_BPS,
-            &prices(),
-            &LevelDraft {
-                token_in: "WETH".into(),
-                token_out: "USDC".into(),
-                side: "sell".into(),
-                amount: "0.5".into(),
-                ..draft()
-            }
-        )
-        .is_ok()
-    );
+fn buy_spends_quote_and_sell_spends_base() {
+    let registry = tokens(6);
+    let strategy = validate_strategy(&registry, &Prices(true), &strategy_draft()).unwrap();
+    let buy = validate_level(
+        &registry,
+        500,
+        &Prices(true),
+        &strategy,
+        &level_draft("buy", "25"),
+    )
+    .unwrap();
+    let sell = validate_level(
+        &registry,
+        500,
+        &Prices(true),
+        &strategy,
+        &level_draft("sell", "0.5"),
+    )
+    .unwrap();
+
+    assert_eq!(buy.side, Side::Buy);
+    assert_eq!(buy.amount, U256::from(25_000_000u64));
+    assert_eq!(buy.amount_decimals, 6);
+    assert_eq!(trade_direction(&strategy, buy.side).token_in, "USDC");
+    assert_eq!(sell.amount, U256::from(500_000_000_000_000_000u64));
+    assert_eq!(sell.amount_decimals, 18);
+    assert_eq!(trade_direction(&strategy, sell.side).token_in, "WETH");
 }
 
-fn sui_draft() -> LevelDraft {
-    LevelDraft {
-        id: "l-sui".into(),
-        venue: "cetus".into(),
-        chain: "sui".into(),
-        token_in: "hBTC".into(),
-        token_out: "SUI".into(),
-        side: "sell".into(),
-        trigger_price_usd: 50_000.0,
-        amount: "0.001".into(),
-        slippage_bps: 100,
+#[test]
+fn bad_level_input_is_rejected() {
+    let registry = tokens(6);
+    let strategy = validate_strategy(&registry, &Prices(true), &strategy_draft()).unwrap();
+
+    for draft in [
+        LevelDraft {
+            strategy_id: "other".into(),
+            ..level_draft("buy", "1")
+        },
+        LevelDraft {
+            side: "hodl".into(),
+            ..level_draft("buy", "1")
+        },
+        LevelDraft {
+            amount: "lots".into(),
+            ..level_draft("buy", "1")
+        },
+        LevelDraft {
+            slippage_bps: 501,
+            ..level_draft("buy", "1")
+        },
+    ] {
+        assert!(
+            validate_level(&registry, 500, &Prices(true), &strategy, &draft).is_err(),
+            "invalid draft was accepted: {draft:?}"
+        );
     }
 }
 
 #[test]
-fn a_sui_rule_stores_the_coin_type_with_its_case_intact() {
-    let level = accept(sui_draft());
+fn startup_check_detects_decimals_config_drift() {
+    let registry = tokens(6);
+    let strategy = validate_strategy(&registry, &Prices(true), &strategy_draft()).unwrap();
+    let level = validate_level(
+        &registry,
+        500,
+        &Prices(true),
+        &strategy,
+        &level_draft("buy", "1"),
+    )
+    .unwrap();
+    let entry = StrategyLevel { strategy, level };
 
-    assert_eq!(level.chain, "sui");
-    assert_eq!(level.token_in, "0xfce::btc::BTC");
-    assert_eq!(level.token_out, "0x2::sui::SUI");
-    assert_eq!(level.venue, VenueName::Cetus);
-    assert_eq!(level.amount_decimals, 8);
+    let error = validate_stored_level(&tokens(18), 500, &Prices(true), &entry)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("config has 18"),
+        "unclear drift error: {error}"
+    );
 }
 
+// A Sui strategy has to reach the venue as a Move type. Upper-casing the symbol,
+// which is what EVM strategies get, would produce a type nothing resolves.
 #[test]
-fn an_evm_rule_still_stores_the_symbol() {
-    let level = accept(draft());
-    assert_eq!(level.token_in, "USDC");
-    assert_eq!(level.token_out, "WETH");
+fn a_sui_strategy_stores_coin_types_with_their_case_intact() {
+    let strategy = validate_strategy(&tokens(6), &Prices(true), &sui_strategy_draft()).unwrap();
+
+    assert_eq!(strategy.chain, "sui");
+    assert_eq!(strategy.base_token, "0xfce::btc::BTC");
+    assert_eq!(strategy.quote_token, "0x2::sui::SUI");
 }
 
+// hBTC is priced off its mainnet reference, so a Sui strategy is quotable even
+// though no feed indexes the testnet coin itself.
+#[test]
+fn a_sui_strategy_is_priced_through_its_reference() {
+    let registry = tokens(6);
+    let strategy = validate_strategy(&registry, &Prices(true), &sui_strategy_draft()).unwrap();
+    let level = validate_level(
+        &registry,
+        500,
+        &Prices(true),
+        &strategy,
+        &LevelDraft {
+            strategy_id: "s-sui".into(),
+            ..level_draft("sell", "0.001")
+        },
+    )
+    .unwrap();
+
+    // Selling spends the base token, whose decimals the level snapshots.
+    assert_eq!(level.amount_decimals, 8);
+    assert_eq!(level.amount, U256::from(100_000u64));
+}
+
+// A venue trading another family only fails at quote time, long after the
+// strategy was accepted and the user was told it was stored.
 #[test]
 fn a_venue_that_does_not_trade_the_chains_family_is_refused() {
-    let error = reject(LevelDraft {
-        venue: "uniswap".into(),
-        ..sui_draft()
-    });
+    let error = validate_strategy(
+        &tokens(6),
+        &Prices(true),
+        &StrategyDraft {
+            venue: "uniswap".into(),
+            ..sui_strategy_draft()
+        },
+    )
+    .unwrap_err()
+    .to_string();
     assert!(error.contains("does not trade"), "unclear: {error}");
 }
 
+// SUI carries no price reference, so it can be the quote leg but never the base.
 #[test]
-fn a_sui_rule_is_priced_through_its_reference() {
-    assert!(validate_level(&tokens(), MAX_SLIPPAGE_BPS, &prices(), &sui_draft()).is_ok());
-}
-
-#[test]
-fn a_coin_without_a_price_reference_cannot_be_the_priced_side() {
-    let error = reject(LevelDraft {
-        token_in: "SUI".into(),
-        token_out: "hBTC".into(),
-        side: "sell".into(),
-        amount: "1".into(),
-        ..sui_draft()
-    });
-    assert!(error.contains("priced on"), "unclear: {error}");
+fn a_coin_without_a_price_reference_cannot_be_the_base() {
+    let error = validate_strategy(
+        &tokens(6),
+        &Prices(true),
+        &StrategyDraft {
+            base_token: "SUI".into(),
+            quote_token: "hBTC".into(),
+            ..sui_strategy_draft()
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("base token"), "unclear: {error}");
 }

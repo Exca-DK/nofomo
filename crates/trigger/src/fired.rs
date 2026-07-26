@@ -1,20 +1,20 @@
 use tempo_agentic_price::PriceTick;
-use tempo_agentic_strategy::{Level, Order, OrderStatus, level_fires};
+use tempo_agentic_strategy::{Order, OrderStatus, StrategyLevel, level_fires};
 
 use crate::resolver::TokenResolver;
 
 /// Returns unspent levels fired by this tick, preserving input order.
 pub fn fired_levels<'a>(
-    levels: &'a [Level],
+    levels: &'a [StrategyLevel],
     orders: &[Order],
     tick: &PriceTick,
     resolver: &TokenResolver,
-) -> Vec<&'a Level> {
+) -> Vec<&'a StrategyLevel> {
     levels
         .iter()
-        .filter(|level| !is_spent(&level.id, orders))
+        .filter(|entry| !is_spent(&entry.level.id, orders))
         .filter(|level| prices_this_tick(level, tick, resolver))
-        .filter(|level| level_fires(level, tick.price_usd))
+        .filter(|entry| level_fires(&entry.level, tick.price_usd))
         .collect()
 }
 
@@ -26,6 +26,7 @@ pub fn cooling_down(level_id: &str, orders: &[Order], now: i64) -> bool {
     orders
         .iter()
         .filter(|order| order.level_id == level_id)
+        .filter(|order| order.status() == OrderStatus::Failed)
         .any(|order| now < order.created_at + LEVEL_COOLDOWN_SECS)
 }
 
@@ -38,11 +39,11 @@ pub fn is_spent(level_id: &str, orders: &[Order]) -> bool {
 }
 
 // Skip unresolved levels to avoid pricing the wrong token.
-fn prices_this_tick(level: &Level, tick: &PriceTick, resolver: &TokenResolver) -> bool {
-    let Some(pair) = resolver.price_pair(level) else {
+fn prices_this_tick(entry: &StrategyLevel, tick: &PriceTick, resolver: &TokenResolver) -> bool {
+    let Some(pair) = resolver.price_pair(&entry.strategy) else {
         tracing::warn!(
-            level = %level.id,
-            chain = %level.chain,
+            level = %entry.level.id,
+            chain = %entry.strategy.chain,
             "level names a chain or token the configuration does not; nothing can price it"
         );
         return false;

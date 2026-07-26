@@ -9,9 +9,10 @@ pub use gates::{
 use std::pin::Pin;
 
 use futures::Stream;
+use serde::Serialize;
 
 /// A token and its chain-independent EVM chain ID.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct PricePair {
     pub chain_id: u64,
     pub token_address: String,

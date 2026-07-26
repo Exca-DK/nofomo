@@ -15,8 +15,12 @@ use tempo_agentic_domain::{
     SignedTx, Signer, TradeVenue, TxContext, UnsignedTx, VenueName,
 };
 use tempo_agentic_orchestrator::{ExecDeps, drive_order};
-use tempo_agentic_storage::{SqliteLevelStore, SqliteOrderStore, connect_pool};
-use tempo_agentic_strategy::{Level, LevelStore, Order, OrderState, OrderStore, Side};
+use tempo_agentic_storage::{
+    LockFile, SqliteLevelStore, SqliteOrderStore, SqliteStrategyStore, initialize_new_under_lock,
+};
+use tempo_agentic_strategy::{
+    Level, LevelStore, Order, OrderState, OrderStore, Side, Strategy, StrategyLevel, StrategyStore,
+};
 use tempo_agentic_vault::{Vault, VaultSigner};
 
 const GAS_PRICE: u64 = 1_000;
@@ -31,18 +35,28 @@ fn plan() -> ExecutionPlan {
     }
 }
 
-fn level() -> Level {
-    Level {
-        id: "l-sui".into(),
+fn strategy() -> Strategy {
+    Strategy {
+        id: "s-sui".into(),
         venue: VenueName::Cetus,
         chain: "sui".into(),
-        token_in: "0x2::sui::SUI".into(),
-        token_out: "0x2::usdc::USDC".into(),
-        side: Side::Buy,
-        trigger_price_usd: 1.0,
-        amount: U256::from(1_000_000u64),
-        amount_decimals: 9,
-        slippage_bps: 50,
+        base_token: "0xfce::btc::BTC".into(),
+        quote_token: "0x2::sui::SUI".into(),
+    }
+}
+
+fn level() -> StrategyLevel {
+    StrategyLevel {
+        strategy: strategy(),
+        level: Level {
+            id: "l-sui".into(),
+            strategy_id: "s-sui".into(),
+            side: Side::Sell,
+            trigger_price_usd: 1.0,
+            amount: U256::from(1_000_000u64),
+            amount_decimals: 8,
+            slippage_bps: 50,
+        },
     }
 }
 
@@ -150,10 +164,18 @@ impl Fixture {
                 .unwrap()
                 .as_nanos()
         ));
-        let pool = connect_pool(&path).await.unwrap();
+        // A fresh path needs the schema written under the lock, as `run` does.
+        let lock = LockFile::acquire(LockFile::path_for(&path)).unwrap();
+        let pool = initialize_new_under_lock(&path, &lock).await.unwrap();
+        let strategies = SqliteStrategyStore::new(pool.clone());
         let levels = SqliteLevelStore::new(pool.clone());
         let orders = Arc::new(SqliteOrderStore::new(pool));
-        levels.upsert_level(&level()).await.unwrap();
+        // An order is only valid against a stored strategy and level.
+        strategies.upsert_strategy(&strategy()).await.unwrap();
+        levels
+            .upsert_level(&level().level, &strategy())
+            .await
+            .unwrap();
 
         let mut vault = Vault::new();
         vault.add(VaultSigner::generate(

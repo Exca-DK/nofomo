@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use http_body_util::{BodyExt, Full, combinators::BoxBody};
 use hyper::body::{Bytes, Incoming};
 use hyper::service::{Service, service_fn};
-use hyper::{Request, Response, StatusCode};
+use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
@@ -44,6 +44,7 @@ impl AdminServer {
         let manifest = manifest_path(database);
         write_manifest(&manifest, &url, &token)?;
 
+        let dashboard = handler.clone();
         let service = StreamableHttpService::new(
             move || Ok(handler.clone()),
             Arc::new(LocalSessionManager::default()),
@@ -56,7 +57,7 @@ impl AdminServer {
         Ok(Self {
             url,
             manifest,
-            task: tokio::spawn(accept(listener, service, token)),
+            task: tokio::spawn(accept(listener, service, dashboard, token)),
         })
     }
 }
@@ -77,7 +78,12 @@ pub fn manifest_path(database: &Path) -> PathBuf {
     PathBuf::from(path)
 }
 
-async fn accept(listener: TcpListener, service: AdminService, token: String) {
+async fn accept(
+    listener: TcpListener,
+    service: AdminService,
+    dashboard: AdminHandler,
+    token: String,
+) {
     loop {
         let stream = match listener.accept().await {
             Ok((stream, _)) => stream,
@@ -87,14 +93,19 @@ async fn accept(listener: TcpListener, service: AdminService, token: String) {
             }
         };
         let inner = TowerToHyperService::new(service.clone());
+        let dashboard = dashboard.clone();
         let token = token.clone();
         tokio::spawn(async move {
             let guarded = service_fn(move |request: Request<Incoming>| {
                 let inner = inner.clone();
+                let dashboard = dashboard.clone();
                 let token = token.clone();
                 async move {
                     if !authorized(&request, &token) {
                         return Ok(unauthorized());
+                    }
+                    if request.method() == Method::GET && request.uri().path() == "/dashboard" {
+                        return Ok(dashboard_response(&dashboard).await);
                     }
                     inner.call(request).await
                 }
@@ -107,6 +118,38 @@ async fn accept(listener: TcpListener, service: AdminService, token: String) {
             }
         });
     }
+}
+
+async fn dashboard_response(handler: &AdminHandler) -> Response<BoxBody<Bytes, Infallible>> {
+    match handler.dashboard_snapshot().await {
+        Ok(snapshot) => match serde_json::to_vec(&snapshot) {
+            Ok(body) => response(StatusCode::OK, body),
+            Err(error) => {
+                tracing::warn!(%error, "cannot serialize dashboard snapshot");
+                response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    br#"{"error":"dashboard snapshot unavailable"}"#.to_vec(),
+                )
+            }
+        },
+        Err(error) => {
+            tracing::warn!(%error, "cannot read dashboard snapshot");
+            response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                br#"{"error":"dashboard snapshot unavailable"}"#.to_vec(),
+            )
+        }
+    }
+}
+
+fn response(status: StatusCode, body: Vec<u8>) -> Response<BoxBody<Bytes, Infallible>> {
+    let mut response = Response::new(Full::new(Bytes::from(body)).boxed());
+    *response.status_mut() = status;
+    response.headers_mut().insert(
+        hyper::header::CONTENT_TYPE,
+        hyper::header::HeaderValue::from_static("application/json"),
+    );
+    response
 }
 
 // Full-token equality authenticates local processes without prefix leaks.

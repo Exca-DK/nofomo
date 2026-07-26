@@ -2,10 +2,9 @@ mod lock;
 mod strategy;
 
 pub use lock::LockFile;
-pub use strategy::{SqliteLevelStore, SqliteOrderStore};
+pub use strategy::{SqliteLevelStore, SqliteOrderStore, SqliteStrategyStore};
 
 use std::path::Path;
-use std::str::FromStr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
@@ -338,33 +337,125 @@ fn now_i64() -> i64 {
         .as_secs() as i64
 }
 
-/// Opens or creates the WAL database with foreign keys and migrations.
-pub async fn connect_pool(path: &Path) -> Result<SqlitePool> {
+pub const CURRENT_SCHEMA_VERSION: i64 = 3;
+
+/// Creates the current schema in a new database while the database lock is held.
+pub async fn initialize_new_under_lock(path: &Path, lock: &LockFile) -> Result<SqlitePool> {
+    if !lock.guards(path) {
+        bail!(
+            "lock {} does not guard database {}",
+            LockFile::path_for(path).display(),
+            path.display()
+        );
+    }
+    if path.exists() {
+        bail!("database {} already exists", path.display());
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("cannot create state directory {}", parent.display()))?;
     }
-    let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))?
+
+    let options = SqliteConnectOptions::new()
+        .filename(path)
         .create_if_missing(true)
+        .foreign_keys(true);
+    let initializer = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .with_context(|| format!("cannot create SQLite state {}", path.display()))?;
+    let mut transaction = initializer.begin().await?;
+    sqlx::raw_sql(include_str!("../schema.sql"))
+        .execute(&mut *transaction)
+        .await
+        .context("cannot initialize SQLite schema")?;
+    transaction.commit().await?;
+    initializer.close().await;
+
+    open_existing_current(path).await
+}
+
+/// Verifies an existing database without writes, then opens the current WAL schema.
+pub async fn open_existing_current(path: &Path) -> Result<SqlitePool> {
+    if !path.is_file() {
+        bail!("SQLite state {} does not exist", path.display());
+    }
+
+    let verifier_options = SqliteConnectOptions::new()
+        .filename(path)
+        .read_only(true)
+        .immutable(true)
+        .create_if_missing(false);
+    let verifier = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(verifier_options)
+        .await
+        .map_err(|error| rejected_schema(path, format!("cannot read schema: {error}")))?;
+    let version = sqlx::query_scalar::<_, i64>("PRAGMA user_version")
+        .fetch_one(&verifier)
+        .await
+        .map_err(|error| rejected_schema(path, format!("cannot read version: {error}")))?;
+    verifier.close().await;
+    if version != CURRENT_SCHEMA_VERSION {
+        return Err(rejected_schema(
+            path,
+            format!("found version {version}, expected {CURRENT_SCHEMA_VERSION}"),
+        ));
+    }
+
+    let options = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(false)
         .journal_mode(SqliteJournalMode::Wal)
         .foreign_keys(true)
         .busy_timeout(Duration::from_secs(5));
-    let pool = SqlitePoolOptions::new()
+    SqlitePoolOptions::new()
         .max_connections(4)
         .connect_with(options)
         .await
-        .context("cannot open SQLite state")?;
-    // Migrations must remain safe to replay on every open.
-    for migration in [
-        include_str!("../migrations/0001_audit.sql"),
-        include_str!("../migrations/0002_strategy.sql"),
-    ] {
-        sqlx::raw_sql(migration)
-            .execute(&pool)
-            .await
-            .context("cannot run SQLite migrations")?;
+        .with_context(|| format!("cannot open SQLite state {}", path.display()))
+}
+
+/// Opens the current schema for CLI reads without changing PRAGMAs or creating sidecars.
+pub async fn open_existing_read_only(path: &Path) -> Result<SqlitePool> {
+    if !path.is_file() {
+        bail!("SQLite state {} does not exist", path.display());
+    }
+    let options = SqliteConnectOptions::new()
+        .filename(path)
+        .read_only(true)
+        .create_if_missing(false)
+        .busy_timeout(Duration::from_secs(5));
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .map_err(|error| rejected_schema(path, format!("cannot read schema: {error}")))?;
+    let version = sqlx::query_scalar::<_, i64>("PRAGMA user_version")
+        .fetch_one(&pool)
+        .await
+        .map_err(|error| rejected_schema(path, format!("cannot read version: {error}")))?;
+    if version != CURRENT_SCHEMA_VERSION {
+        pool.close().await;
+        return Err(rejected_schema(
+            path,
+            format!("found version {version}, expected {CURRENT_SCHEMA_VERSION}"),
+        ));
     }
     Ok(pool)
+}
+
+/// Compatibility name for callers that only open an already initialized database.
+pub async fn connect_pool(path: &Path) -> Result<SqlitePool> {
+    open_existing_current(path).await
+}
+
+fn rejected_schema(path: &Path, reason: String) -> anyhow::Error {
+    anyhow::anyhow!(
+        "unsupported SQLite schema at {} ({reason}); remove this development database manually and start again",
+        path.display()
+    )
 }
 
 #[cfg(test)]
@@ -381,6 +472,16 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    async fn initialize(path: &Path) -> LockFile {
+        let lock = LockFile::acquire(LockFile::path_for(path)).unwrap();
+        initialize_new_under_lock(path, &lock)
+            .await
+            .unwrap()
+            .close()
+            .await;
+        lock
     }
 
     fn request() -> QuoteTradeRequest {
@@ -413,6 +514,7 @@ mod tests {
     #[tokio::test]
     async fn claims_once_and_invalidates_quotes_on_restart() {
         let path = path("lifecycle");
+        let _lock = initialize(&path).await;
         let store = SqliteAuditStore::open(&path, "test").await.unwrap();
         store
             .record_quote(&request(), &quote("q-claimed"), "digest")
@@ -452,6 +554,7 @@ mod tests {
     #[tokio::test]
     async fn unconfirmed_attempt_is_durable_and_fail_closed() {
         let path = path("unconfirmed");
+        let _lock = initialize(&path).await;
         let store = SqliteAuditStore::open(&path, "test").await.unwrap();
         store
             .record_quote(&request(), &quote("q-no"), "digest")

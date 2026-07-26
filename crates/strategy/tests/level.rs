@@ -2,15 +2,22 @@ use std::str::FromStr;
 
 use alloy_primitives::U256;
 use tempo_agentic_domain::VenueName;
-use tempo_agentic_strategy::{Level, Side, base_token, level_fires};
+use tempo_agentic_strategy::{Level, Side, Strategy, level_fires, trade_direction};
+
+fn strategy() -> Strategy {
+    Strategy {
+        id: "s-1".into(),
+        venue: VenueName::Uniswap,
+        chain: "base".into(),
+        base_token: "WETH".into(),
+        quote_token: "USDC".into(),
+    }
+}
 
 fn level(side: Side) -> Level {
     Level {
         id: "l-1".into(),
-        venue: VenueName::Uniswap,
-        chain: "base".into(),
-        token_in: "USDC".into(),
-        token_out: "WETH".into(),
+        strategy_id: "s-1".into(),
         side,
         trigger_price_usd: 3_000.0,
         amount: U256::from(1_000_000u64),
@@ -36,9 +43,12 @@ fn sell_fires_at_or_above_trigger() {
 }
 
 #[test]
-fn base_token_is_the_asset_being_traded() {
-    assert_eq!(base_token(&level(Side::Buy)), "WETH");
-    assert_eq!(base_token(&level(Side::Sell)), "USDC");
+fn buy_and_sell_have_one_market_direction() {
+    let strategy = strategy();
+    let buy = trade_direction(&strategy, Side::Buy);
+    assert_eq!((buy.token_in, buy.token_out), ("USDC", "WETH"));
+    let sell = trade_direction(&strategy, Side::Sell);
+    assert_eq!((sell.token_in, sell.token_out), ("WETH", "USDC"));
 }
 
 #[test]
