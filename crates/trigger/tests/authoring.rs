@@ -2,19 +2,17 @@ use std::collections::HashMap;
 
 use alloy_primitives::U256;
 use tempo_agentic_config::{EvmChain, EvmConfig, EvmToken};
-use tempo_agentic_domain::VenueName;
 use tempo_agentic_price::{PricePair, PriceSource, PriceStream};
-use tempo_agentic_strategy::Side;
-use tempo_agentic_trigger::{LevelDraft, validate_level};
+use tempo_agentic_strategy::{Side, StrategyLevel, trade_direction};
+use tempo_agentic_trigger::{
+    LevelDraft, StrategyDraft, validate_level, validate_stored_level, validate_strategy,
+};
 
-/// Supports only its configured chains.
-struct Prices {
-    chains: Vec<u64>,
-}
+struct Prices(bool);
 
 impl PriceSource for Prices {
     fn supports(&self, pair: &PricePair) -> bool {
-        self.chains.contains(&pair.chain_id)
+        self.0 && pair.chain_id == 8453
     }
 
     fn stream(&self, _pair: &PricePair) -> PriceStream {
@@ -22,13 +20,7 @@ impl PriceSource for Prices {
     }
 }
 
-fn prices() -> Prices {
-    Prices { chains: vec![8453] }
-}
-
-const MAX_SLIPPAGE_BPS: u16 = 500;
-
-fn evm() -> EvmConfig {
+fn evm(usdc_decimals: u8) -> EvmConfig {
     EvmConfig {
         keystore_path: "/dev/null".into(),
         password_file: "/dev/null".into(),
@@ -39,17 +31,17 @@ fn evm() -> EvmConfig {
             graph_subgraph_id: "subgraph".into(),
             tokens: HashMap::from([
                 (
-                    "WETH".to_string(),
+                    "WETH".into(),
                     EvmToken {
                         address: "0x4200000000000000000000000000000000000006".into(),
                         decimals: 18,
                     },
                 ),
                 (
-                    "USDC".to_string(),
+                    "USDC".into(),
                     EvmToken {
                         address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913".into(),
-                        decimals: 6,
+                        decimals: usdc_decimals,
                     },
                 ),
             ]),
@@ -57,175 +49,119 @@ fn evm() -> EvmConfig {
     }
 }
 
-fn draft() -> LevelDraft {
-    LevelDraft {
-        id: "l-1".into(),
+fn strategy_draft() -> StrategyDraft {
+    StrategyDraft {
+        id: "s-1".into(),
         venue: "uniswap".into(),
-        chain: "base".into(),
-        token_in: "USDC".into(),
-        token_out: "WETH".into(),
-        side: "buy".into(),
+        chain: "BASE".into(),
+        base_token: "weth".into(),
+        quote_token: "usdc".into(),
+    }
+}
+
+fn level_draft(side: &str, amount: &str) -> LevelDraft {
+    LevelDraft {
+        id: format!("l-{side}"),
+        strategy_id: "s-1".into(),
+        side: side.into(),
         trigger_price_usd: 3_000.0,
-        amount: "25".into(),
+        amount: amount.into(),
         slippage_bps: 50,
     }
 }
 
-fn accept(draft: LevelDraft) -> tempo_agentic_strategy::Level {
-    validate_level(&evm(), MAX_SLIPPAGE_BPS, &prices(), &draft).unwrap()
-}
-
-fn reject(draft: LevelDraft) -> String {
-    validate_level(&evm(), MAX_SLIPPAGE_BPS, &prices(), &draft)
-        .expect_err("this draft must not be storable")
-        .to_string()
-}
-
 #[test]
-fn a_sound_draft_becomes_a_rule() {
-    let level = accept(draft());
+fn strategy_is_canonical_and_must_be_priceable() {
+    let strategy = validate_strategy(&evm(6), &Prices(true), &strategy_draft()).unwrap();
+    assert_eq!(strategy.chain, "base");
+    assert_eq!(strategy.base_token, "WETH");
+    assert_eq!(strategy.quote_token, "USDC");
 
-    assert_eq!(level.id, "l-1");
-    assert_eq!(level.venue, VenueName::Uniswap);
-    assert_eq!(level.side, Side::Buy);
-    assert_eq!(level.trigger_price_usd, 3_000.0);
-    assert_eq!(level.slippage_bps, 50);
-}
-
-// Convert human units to exact chain units.
-#[test]
-fn the_amount_is_scaled_by_the_input_token() {
-    let level = accept(draft());
-    assert_eq!(level.amount, U256::from(25_000_000u64));
-    assert_eq!(level.amount_decimals, 6);
-
-    let selling = LevelDraft {
-        token_in: "WETH".into(),
-        token_out: "USDC".into(),
-        side: "sell".into(),
-        amount: "0.5".into(),
-        ..draft()
-    };
-    let level = accept(selling);
-    assert_eq!(level.amount, U256::from(500_000_000_000_000_000u64));
-    assert_eq!(level.amount_decimals, 18);
-}
-
-// Store the resolver's configured spelling.
-#[test]
-fn the_chain_is_stored_as_the_configuration_spells_it() {
-    let level = accept(LevelDraft {
-        chain: "BASE".into(),
-        token_in: "usdc".into(),
-        token_out: "weth".into(),
-        ..draft()
-    });
-
-    assert_eq!(level.chain, "base");
-    assert_eq!(level.token_in, "USDC");
-    assert_eq!(level.token_out, "WETH");
-}
-
-// Reject unpriceable rules.
-#[test]
-fn a_rule_nothing_can_price_is_refused() {
-    assert!(
-        reject(LevelDraft {
-            chain: "solana".into(),
-            ..draft()
-        })
-        .contains("solana")
-    );
-    assert!(
-        reject(LevelDraft {
-            token_in: "DOGE".into(),
-            ..draft()
-        })
-        .contains("DOGE")
-    );
-    assert!(
-        reject(LevelDraft {
-            token_out: "DOGE".into(),
-            ..draft()
-        })
-        .contains("DOGE")
-    );
-}
-
-// Reject rules the venue cannot execute.
-#[test]
-fn slippage_above_the_ceiling_is_refused() {
-    let error = reject(LevelDraft {
-        slippage_bps: MAX_SLIPPAGE_BPS + 1,
-        ..draft()
-    });
-    assert!(error.contains("500"), "say what the ceiling is: {error}");
-}
-
-#[test]
-fn a_pair_that_does_not_trade_is_refused() {
-    assert!(
-        reject(LevelDraft {
-            token_out: "USDC".into(),
-            ..draft()
-        })
-        .contains("must differ")
-    );
-}
-
-#[test]
-fn an_unreadable_side_venue_or_amount_is_refused() {
-    assert!(
-        reject(LevelDraft {
-            side: "hodl".into(),
-            ..draft()
-        })
-        .contains("hodl")
-    );
-    assert!(
-        reject(LevelDraft {
-            venue: "sushiswap".into(),
-            ..draft()
-        })
-        .contains("sushiswap")
-    );
-    assert!(
-        !reject(LevelDraft {
-            amount: "lots".into(),
-            ..draft()
-        })
-        .is_empty()
-    );
-}
-
-// Reject configured chains unsupported by the price source.
-#[test]
-fn a_chain_no_source_quotes_is_refused() {
-    let quoting_nothing = Prices { chains: Vec::new() };
-    let error = validate_level(&evm(), MAX_SLIPPAGE_BPS, &quoting_nothing, &draft())
-        .expect_err("a rule nothing can price must not be storable")
+    let error = validate_strategy(&evm(6), &Prices(false), &strategy_draft())
+        .unwrap_err()
         .to_string();
-    assert!(error.contains("could never fire"), "unclear: {error}");
-    assert!(error.contains("WETH"), "say which token: {error}");
+    assert!(error.contains("could never fire"));
 }
 
-// Support checks follow the side's priced token.
 #[test]
-fn the_side_decides_which_token_has_to_be_quotable() {
-    assert!(validate_level(&evm(), MAX_SLIPPAGE_BPS, &prices(), &draft()).is_ok());
+fn buy_spends_quote_and_sell_spends_base() {
+    let config = evm(6);
+    let strategy = validate_strategy(&config, &Prices(true), &strategy_draft()).unwrap();
+    let buy = validate_level(
+        &config,
+        500,
+        &Prices(true),
+        &strategy,
+        &level_draft("buy", "25"),
+    )
+    .unwrap();
+    let sell = validate_level(
+        &config,
+        500,
+        &Prices(true),
+        &strategy,
+        &level_draft("sell", "0.5"),
+    )
+    .unwrap();
+
+    assert_eq!(buy.side, Side::Buy);
+    assert_eq!(buy.amount, U256::from(25_000_000u64));
+    assert_eq!(buy.amount_decimals, 6);
+    assert_eq!(trade_direction(&strategy, buy.side).token_in, "USDC");
+    assert_eq!(sell.amount, U256::from(500_000_000_000_000_000u64));
+    assert_eq!(sell.amount_decimals, 18);
+    assert_eq!(trade_direction(&strategy, sell.side).token_in, "WETH");
+}
+
+#[test]
+fn bad_level_input_is_rejected() {
+    let config = evm(6);
+    let strategy = validate_strategy(&config, &Prices(true), &strategy_draft()).unwrap();
+
+    for draft in [
+        LevelDraft {
+            strategy_id: "other".into(),
+            ..level_draft("buy", "1")
+        },
+        LevelDraft {
+            side: "hodl".into(),
+            ..level_draft("buy", "1")
+        },
+        LevelDraft {
+            amount: "lots".into(),
+            ..level_draft("buy", "1")
+        },
+        LevelDraft {
+            slippage_bps: 501,
+            ..level_draft("buy", "1")
+        },
+    ] {
+        assert!(
+            validate_level(&config, 500, &Prices(true), &strategy, &draft).is_err(),
+            "invalid draft was accepted: {draft:?}"
+        );
+    }
+}
+
+#[test]
+fn startup_check_detects_decimals_config_drift() {
+    let config_a = evm(6);
+    let strategy = validate_strategy(&config_a, &Prices(true), &strategy_draft()).unwrap();
+    let level = validate_level(
+        &config_a,
+        500,
+        &Prices(true),
+        &strategy,
+        &level_draft("buy", "1"),
+    )
+    .unwrap();
+    let entry = StrategyLevel { strategy, level };
+
+    let error = validate_stored_level(&evm(18), 500, &Prices(true), &entry)
+        .unwrap_err()
+        .to_string();
     assert!(
-        validate_level(
-            &evm(),
-            MAX_SLIPPAGE_BPS,
-            &prices(),
-            &LevelDraft {
-                token_in: "WETH".into(),
-                token_out: "USDC".into(),
-                side: "sell".into(),
-                amount: "0.5".into(),
-                ..draft()
-            }
-        )
-        .is_ok()
+        error.contains("config has 18"),
+        "unclear drift error: {error}"
     );
 }

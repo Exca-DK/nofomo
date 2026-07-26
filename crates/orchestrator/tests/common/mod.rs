@@ -15,8 +15,13 @@ use tempo_agentic_domain::{
     Signer, TradeVenue, TxContext, UnsignedTx, VenueName,
 };
 use tempo_agentic_orchestrator::{ExecDeps, drive_order, sweep};
-use tempo_agentic_storage::{SqliteLevelStore, SqliteOrderStore, connect_pool};
-use tempo_agentic_strategy::{Level, LevelStore, Order, OrderState, OrderStore, Side};
+use tempo_agentic_storage::{
+    LockFile, SqliteLevelStore, SqliteOrderStore, SqliteStrategyStore, initialize_new_under_lock,
+    open_existing_current,
+};
+use tempo_agentic_strategy::{
+    Level, LevelStore, Order, OrderState, OrderStore, Side, Strategy, StrategyLevel, StrategyStore,
+};
 
 pub const BASE_ID: u64 = 8453;
 const USDC: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
@@ -38,15 +43,29 @@ pub fn phase(state: &OrderState) -> &'static str {
 pub fn level() -> Level {
     Level {
         id: "l-1".into(),
-        venue: VenueName::Uniswap,
-        chain: "base".into(),
-        token_in: "USDC".into(),
-        token_out: "WETH".into(),
+        strategy_id: "s-1".into(),
         side: Side::Buy,
         trigger_price_usd: 3_000.0,
         amount: U256::from(1_000_000u64),
         amount_decimals: 6,
         slippage_bps: 50,
+    }
+}
+
+pub fn strategy() -> Strategy {
+    Strategy {
+        id: "s-1".into(),
+        venue: VenueName::Uniswap,
+        chain: "base".into(),
+        base_token: "WETH".into(),
+        quote_token: "USDC".into(),
+    }
+}
+
+pub fn entry() -> StrategyLevel {
+    StrategyLevel {
+        strategy: strategy(),
+        level: level(),
     }
 }
 
@@ -58,7 +77,7 @@ pub fn order(id: &str, chain_id: u64) -> Order {
         input_amount: "1000000".into(),
         quote: serde_json::json!({"tradeType": "EXACT_INPUT"}),
     };
-    Order::new(id.into(), &level(), plan, 0)
+    Order::new(id.into(), &entry(), plan, 0)
 }
 
 /// Captures the durable phase visible when a fake runs.
@@ -237,6 +256,7 @@ impl Default for Script {
 }
 
 pub struct Harness {
+    strategies: SqliteStrategyStore,
     levels: Arc<SqliteLevelStore>,
     orders: Arc<SqliteOrderStore>,
     deps: ExecDeps,
@@ -259,7 +279,16 @@ impl Harness {
                 .as_nanos()
         ));
         let harness = Self::open(path, script).await;
-        harness.levels.upsert_level(&level()).await.unwrap();
+        harness
+            .strategies
+            .upsert_strategy(&strategy())
+            .await
+            .unwrap();
+        harness
+            .levels
+            .upsert_level(&level(), &strategy())
+            .await
+            .unwrap();
         harness.put(&order("o-1", BASE_ID)).await;
         harness
     }
@@ -272,7 +301,13 @@ impl Harness {
     }
 
     async fn open(path: PathBuf, script: Script) -> Self {
-        let pool = connect_pool(&path).await.unwrap();
+        let pool = if path.exists() {
+            open_existing_current(&path).await.unwrap()
+        } else {
+            let lock = LockFile::acquire(LockFile::path_for(&path)).unwrap();
+            initialize_new_under_lock(&path, &lock).await.unwrap()
+        };
+        let strategies = SqliteStrategyStore::new(pool.clone());
         let levels = Arc::new(SqliteLevelStore::new(pool.clone()));
         let orders = Arc::new(SqliteOrderStore::new(pool));
 
@@ -306,6 +341,7 @@ impl Harness {
             allow_broadcast: script.allow_broadcast,
         };
         Self {
+            strategies,
             levels,
             orders,
             deps,

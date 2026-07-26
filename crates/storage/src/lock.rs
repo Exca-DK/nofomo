@@ -41,6 +41,10 @@ impl LockFile {
         path.push(".lock");
         PathBuf::from(path)
     }
+
+    pub(crate) fn guards(&self, database: &Path) -> bool {
+        self.path == Self::path_for(database)
+    }
 }
 
 impl Drop for LockFile {

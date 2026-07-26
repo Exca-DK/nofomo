@@ -1,15 +1,23 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use alloy_primitives::U256;
 use serde_json::json;
 use sqlx::SqlitePool;
 use tempo_agentic_domain::{ExecStep, ExecutionPlan, VenueName};
-use tempo_agentic_storage::{SqliteLevelStore, SqliteOrderStore, connect_pool};
-use tempo_agentic_strategy::{Level, LevelStore, Order, OrderState, OrderStatus, OrderStore, Side};
+use tempo_agentic_storage::{
+    LockFile, SqliteLevelStore, SqliteOrderStore, SqliteStrategyStore, initialize_new_under_lock,
+    open_existing_current,
+};
+use tempo_agentic_strategy::{
+    Level, LevelStore, Order, OrderState, OrderStatus, OrderStore, Side, Strategy, StrategyLevel,
+    StrategyStore,
+};
 
 struct Fixture {
     levels: SqliteLevelStore,
+    strategies: SqliteStrategyStore,
     orders: SqliteOrderStore,
     pool: SqlitePool,
     path: PathBuf,
@@ -25,13 +33,26 @@ impl Fixture {
                 .unwrap()
                 .as_nanos()
         ));
-        let pool = connect_pool(&path).await.unwrap();
+        let lock = LockFile::acquire(LockFile::path_for(&path)).unwrap();
+        let pool = initialize_new_under_lock(&path, &lock).await.unwrap();
         Self {
             levels: SqliteLevelStore::new(pool.clone()),
+            strategies: SqliteStrategyStore::new(pool.clone()),
             orders: SqliteOrderStore::new(pool.clone()),
             pool,
             path,
         }
+    }
+
+    async fn store(&self, entry: &StrategyLevel) {
+        self.strategies
+            .upsert_strategy(&entry.strategy)
+            .await
+            .unwrap();
+        self.levels
+            .upsert_level(&entry.level, &entry.strategy)
+            .await
+            .unwrap();
     }
 
     fn cleanup(self) {
@@ -44,15 +65,29 @@ impl Fixture {
 fn level() -> Level {
     Level {
         id: "l-1".into(),
-        venue: VenueName::Uniswap,
-        chain: "base".into(),
-        token_in: "USDC".into(),
-        token_out: "WETH".into(),
+        strategy_id: "s-1".into(),
         side: Side::Buy,
         trigger_price_usd: 3_000.5,
         amount: U256::from(1_000_000u64),
         amount_decimals: 6,
         slippage_bps: 50,
+    }
+}
+
+fn strategy() -> Strategy {
+    Strategy {
+        id: "s-1".into(),
+        venue: VenueName::Uniswap,
+        chain: "base".into(),
+        base_token: "WETH".into(),
+        quote_token: "USDC".into(),
+    }
+}
+
+fn entry() -> StrategyLevel {
+    StrategyLevel {
+        strategy: strategy(),
+        level: level(),
     }
 }
 
@@ -72,23 +107,44 @@ async fn level_round_trips_including_a_max_u256_amount() {
     let mut stored = level();
     stored.amount = U256::MAX;
     stored.amount_decimals = 18;
-    fixture.levels.upsert_level(&stored).await.unwrap();
+    fixture
+        .store(&StrategyLevel {
+            strategy: strategy(),
+            level: stored.clone(),
+        })
+        .await;
 
     assert_eq!(
         fixture.levels.get_level("l-1").await.unwrap(),
-        Some(stored.clone())
+        Some(StrategyLevel {
+            strategy: strategy(),
+            level: stored.clone(),
+        })
     );
     assert_eq!(
         fixture.levels.list_levels().await.unwrap(),
-        vec![stored.clone()]
+        vec![StrategyLevel {
+            strategy: strategy(),
+            level: stored.clone(),
+        }]
     );
 
     // Upsert is keyed on id: a second write updates rather than duplicating.
     let mut edited = stored.clone();
     edited.side = Side::Sell;
     edited.trigger_price_usd = 4_200.0;
-    fixture.levels.upsert_level(&edited).await.unwrap();
-    assert_eq!(fixture.levels.list_levels().await.unwrap(), vec![edited]);
+    fixture
+        .levels
+        .upsert_level(&edited, &strategy())
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture.levels.list_levels().await.unwrap(),
+        vec![StrategyLevel {
+            strategy: strategy(),
+            level: edited,
+        }]
+    );
 
     fixture.cleanup();
 }
@@ -102,9 +158,74 @@ async fn deleting_a_missing_level_succeeds() {
 }
 
 #[tokio::test]
+async fn first_level_and_market_change_never_create_a_hybrid() {
+    let fixture = Fixture::new("strategy-level-race").await;
+    fixture
+        .strategies
+        .upsert_strategy(&strategy())
+        .await
+        .unwrap();
+
+    // Separate pools guarantee separate SQLite connections for the two racing writers.
+    let strategy_pool = open_existing_current(&fixture.path).await.unwrap();
+    let level_pool = open_existing_current(&fixture.path).await.unwrap();
+    let strategy_store = SqliteStrategyStore::new(strategy_pool.clone());
+    let level_store = SqliteLevelStore::new(level_pool.clone());
+    let mut changed = strategy();
+    changed.base_token = "USDC".into();
+    changed.quote_token = "WETH".into();
+    let expected = strategy();
+    let level = level();
+    let barrier = Arc::new(tokio::sync::Barrier::new(3));
+
+    let change = {
+        let barrier = barrier.clone();
+        tokio::spawn(async move {
+            barrier.wait().await;
+            strategy_store.upsert_strategy(&changed).await
+        })
+    };
+    let insert = {
+        let barrier = barrier.clone();
+        tokio::spawn(async move {
+            barrier.wait().await;
+            level_store.upsert_level(&level, &expected).await
+        })
+    };
+    barrier.wait().await;
+    let (change, insert) = tokio::join!(change, insert);
+    let change = change.unwrap();
+    let insert = insert.unwrap();
+
+    assert_ne!(
+        change.is_ok(),
+        insert.is_ok(),
+        "exactly one writer must win"
+    );
+    let stored_strategy = fixture
+        .strategies
+        .get_strategy("s-1")
+        .await
+        .unwrap()
+        .unwrap();
+    let stored_level = fixture.levels.get_level("l-1").await.unwrap();
+    if change.is_ok() {
+        assert_eq!(stored_strategy.base_token, "USDC");
+        assert!(stored_level.is_none());
+    } else {
+        assert_eq!(stored_strategy, strategy());
+        assert_eq!(stored_level.unwrap().level.amount_decimals, 6);
+    }
+
+    strategy_pool.close().await;
+    level_pool.close().await;
+    fixture.cleanup();
+}
+
+#[tokio::test]
 async fn every_order_state_round_trips_with_exact_amounts() {
     let fixture = Fixture::new("state-roundtrip").await;
-    fixture.levels.upsert_level(&level()).await.unwrap();
+    fixture.store(&entry()).await;
 
     // Make decimal/hex encoding mix-ups obvious.
     let amount_in = U256::from(1_000u64);
@@ -158,7 +279,7 @@ async fn every_order_state_round_trips_with_exact_amounts() {
     ];
 
     for (index, state) in states.into_iter().enumerate() {
-        let mut order = Order::new(format!("o-{index}"), &level(), plan(), 100 + index as i64);
+        let mut order = Order::new(format!("o-{index}"), &entry(), plan(), 100 + index as i64);
         order.state = state;
         order.swap_attempts = 3;
         order.swap_retry_after_ts = Some(1_700_000_000);
@@ -180,8 +301,8 @@ async fn every_order_state_round_trips_with_exact_amounts() {
 #[tokio::test]
 async fn scalar_amounts_are_decimal_and_state_amounts_are_hex() {
     let fixture = Fixture::new("encoding").await;
-    fixture.levels.upsert_level(&level()).await.unwrap();
-    let order = Order::new("o-1".into(), &level(), plan(), 1);
+    fixture.store(&entry()).await;
+    let order = Order::new("o-1".into(), &entry(), plan(), 1);
     fixture.orders.upsert_order(&order).await.unwrap();
 
     let row = sqlx::query!("SELECT reserved_amount, state FROM orders WHERE id = 'o-1'")
@@ -211,8 +332,8 @@ async fn scalar_amounts_are_decimal_and_state_amounts_are_hex() {
 #[tokio::test]
 async fn denormalized_columns_track_the_state() {
     let fixture = Fixture::new("denormalized").await;
-    fixture.levels.upsert_level(&level()).await.unwrap();
-    let mut order = Order::new("o-1".into(), &level(), plan(), 1);
+    fixture.store(&entry()).await;
+    let mut order = Order::new("o-1".into(), &entry(), plan(), 1);
     fixture.orders.upsert_order(&order).await.unwrap();
 
     order.state = OrderState::Filled {
@@ -232,8 +353,8 @@ async fn denormalized_columns_track_the_state() {
 #[tokio::test]
 async fn the_execution_plan_survives_the_round_trip() {
     let fixture = Fixture::new("plan-roundtrip").await;
-    fixture.levels.upsert_level(&level()).await.unwrap();
-    let order = Order::new("o-1".into(), &level(), plan(), 1);
+    fixture.store(&entry()).await;
+    let order = Order::new("o-1".into(), &entry(), plan(), 1);
     fixture.orders.upsert_order(&order).await.unwrap();
 
     let loaded = fixture.orders.get_order("o-1").await.unwrap().unwrap();
@@ -250,8 +371,8 @@ async fn the_execution_plan_survives_the_round_trip() {
 #[tokio::test]
 async fn an_order_without_a_usable_plan_is_an_error() {
     let fixture = Fixture::new("empty-plan").await;
-    fixture.levels.upsert_level(&level()).await.unwrap();
-    let order = Order::new("o-1".into(), &level(), plan(), 1);
+    fixture.store(&entry()).await;
+    let order = Order::new("o-1".into(), &entry(), plan(), 1);
     fixture.orders.upsert_order(&order).await.unwrap();
     sqlx::query!("UPDATE orders SET plan = '{}' WHERE id = 'o-1'")
         .execute(&fixture.pool)
@@ -265,8 +386,8 @@ async fn an_order_without_a_usable_plan_is_an_error() {
 #[tokio::test]
 async fn an_unknown_venue_on_disk_is_an_error_not_a_default() {
     let fixture = Fixture::new("bad-venue").await;
-    fixture.levels.upsert_level(&level()).await.unwrap();
-    sqlx::query!("UPDATE levels SET venue = 'bogus' WHERE id = 'l-1'")
+    fixture.store(&entry()).await;
+    sqlx::query("UPDATE strategies SET venue = 'bogus' WHERE id = 's-1'")
         .execute(&fixture.pool)
         .await
         .unwrap();
@@ -278,7 +399,7 @@ async fn an_unknown_venue_on_disk_is_an_error_not_a_default() {
 #[tokio::test]
 async fn an_order_cannot_reference_a_missing_level() {
     let fixture = Fixture::new("fk").await;
-    let order = Order::new("o-1".into(), &level(), plan(), 1);
+    let order = Order::new("o-1".into(), &entry(), plan(), 1);
     assert!(fixture.orders.upsert_order(&order).await.is_err());
     fixture.cleanup();
 }

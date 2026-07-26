@@ -35,6 +35,7 @@ hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["server", "server-auto", "service", "tokio"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
 rand = "0.8"
+ratatui = "0.29"
 reqwest-eventsource = "0.6"
 rmcp = { version = "2.2", features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
 schemars = "1"

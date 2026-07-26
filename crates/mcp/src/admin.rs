@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use anyhow::Context;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{ErrorData as McpError, Implementation, ServerCapabilities, ServerInfo};
@@ -8,9 +9,15 @@ use rmcp::{Json, ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tempo_agentic_config::EvmConfig;
-use tempo_agentic_price::PriceSource;
-use tempo_agentic_strategy::{Level, LevelStore, Order, OrderStore};
-use tempo_agentic_trigger::{LevelDraft, validate_level};
+use tempo_agentic_price::{PricePair, PriceSource};
+use tempo_agentic_strategy::{
+    DashboardStore, LevelStore, Order, OrderStore, Strategy, StrategyLevel, StrategyStore,
+    trade_direction,
+};
+use tempo_agentic_trigger::{
+    FeedSnapshot, LevelDraft, RuntimeLevelState, RuntimeStatus, StrategyDraft, TokenResolver,
+    validate_level, validate_strategy,
+};
 
 /// Orders returned when the caller does not say how many it wants.
 const DEFAULT_ORDER_LIMIT: usize = 50;
@@ -18,34 +25,80 @@ const DEFAULT_ORDER_LIMIT: usize = 50;
 /// MCP handler for the running daemon's live database.
 #[derive(Clone)]
 pub struct AdminHandler {
+    strategies: Arc<dyn StrategyStore>,
     levels: Arc<dyn LevelStore>,
     orders: Arc<dyn OrderStore>,
+    dashboard: DashboardDeps,
     evm: EvmConfig,
     max_slippage_bps: u16,
-    allow_broadcast: bool,
     /// Checks price support before storing rules.
     prices: Arc<dyn PriceSource>,
     tool_router: ToolRouter<Self>,
 }
 
+#[derive(Clone)]
+pub struct DashboardDeps {
+    pub store: Arc<dyn DashboardStore>,
+    pub runtime: Arc<RuntimeStatus>,
+}
+
 impl AdminHandler {
     pub fn new(
+        strategies: Arc<dyn StrategyStore>,
         levels: Arc<dyn LevelStore>,
         orders: Arc<dyn OrderStore>,
+        dashboard: DashboardDeps,
         evm: EvmConfig,
         max_slippage_bps: u16,
-        allow_broadcast: bool,
         prices: Arc<dyn PriceSource>,
     ) -> Self {
         Self {
+            strategies,
             levels,
             orders,
+            dashboard,
             evm,
             max_slippage_bps,
-            allow_broadcast,
             prices,
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Builds the observational JSON view after durable data has left its read transaction.
+    pub async fn dashboard_snapshot(&self) -> anyhow::Result<DashboardSnapshot> {
+        let durable = self.dashboard.store.dashboard_data().await?;
+        // Eventual consistency is intentional: runtime is copied only after the DB transaction.
+        let runtime = self.dashboard.runtime.snapshot();
+        let resolver = TokenResolver::from_config(&self.evm);
+        let levels = durable
+            .levels
+            .iter()
+            .map(|entry| {
+                dashboard_level_view(
+                    entry,
+                    runtime.level_state(&entry.level.id, &durable.orders),
+                    &resolver,
+                )
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let orders = durable
+            .orders
+            .iter()
+            .rev()
+            .take(DEFAULT_ORDER_LIMIT)
+            .map(order_view)
+            .collect();
+
+        Ok(DashboardSnapshot {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            started_at: runtime.started_at,
+            generated_at: runtime.generated_at,
+            allow_broadcast: runtime.allow_broadcast,
+            strategies: durable.strategies.iter().map(strategy_view).collect(),
+            levels,
+            orders,
+            feeds: runtime.feeds,
+        })
     }
 }
 
@@ -62,6 +115,7 @@ pub struct DaemonStatus {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct LevelView {
     pub id: String,
+    pub strategy_id: String,
     pub venue: String,
     pub chain: String,
     pub side: String,
@@ -72,6 +126,15 @@ pub struct LevelView {
     pub amount: String,
     pub amount_decimals: u8,
     pub slippage_bps: u16,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct StrategyView {
+    pub id: String,
+    pub venue: String,
+    pub chain: String,
+    pub base_token: String,
+    pub quote_token: String,
 }
 
 /// Operator-facing order without the stored raw quote.
@@ -89,10 +152,42 @@ pub struct OrderView {
     pub created_at: i64,
 }
 
+#[derive(Debug, Serialize)]
+pub struct DashboardSnapshot {
+    pub version: String,
+    pub started_at: i64,
+    pub generated_at: i64,
+    pub allow_broadcast: bool,
+    pub strategies: Vec<StrategyView>,
+    pub levels: Vec<DashboardLevelView>,
+    pub orders: Vec<OrderView>,
+    pub feeds: Vec<FeedSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DashboardLevelView {
+    pub id: String,
+    pub strategy_id: String,
+    pub side: String,
+    pub token_in: String,
+    pub token_out: String,
+    pub trigger_price_usd: f64,
+    pub price_pair: PricePair,
+    pub amount: String,
+    pub amount_decimals: u8,
+    pub slippage_bps: u16,
+    pub runtime_state: RuntimeLevelState,
+}
+
 /// Object wrappers required by MCP output schemas.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct LevelList {
     pub levels: Vec<LevelView>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct StrategyList {
+    pub strategies: Vec<StrategyView>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -121,18 +216,30 @@ fn to_mcp(error: anyhow::Error) -> McpError {
     McpError::invalid_params(error.to_string(), None)
 }
 
-fn level_view(level: &Level) -> LevelView {
+fn strategy_view(strategy: &Strategy) -> StrategyView {
+    StrategyView {
+        id: strategy.id.clone(),
+        venue: strategy.venue.as_str().to_string(),
+        chain: strategy.chain.clone(),
+        base_token: strategy.base_token.clone(),
+        quote_token: strategy.quote_token.clone(),
+    }
+}
+
+fn level_view(entry: &StrategyLevel) -> LevelView {
+    let direction = trade_direction(&entry.strategy, entry.level.side);
     LevelView {
-        id: level.id.clone(),
-        venue: level.venue.as_str().to_string(),
-        chain: level.chain.clone(),
-        side: level.side.as_str().to_string(),
-        token_in: level.token_in.clone(),
-        token_out: level.token_out.clone(),
-        trigger_price_usd: level.trigger_price_usd,
-        amount: level.amount.to_string(),
-        amount_decimals: level.amount_decimals,
-        slippage_bps: level.slippage_bps,
+        id: entry.level.id.clone(),
+        strategy_id: entry.strategy.id.clone(),
+        venue: entry.strategy.venue.as_str().to_string(),
+        chain: entry.strategy.chain.clone(),
+        side: entry.level.side.as_str().to_string(),
+        token_in: direction.token_in.to_owned(),
+        token_out: direction.token_out.to_owned(),
+        trigger_price_usd: entry.level.trigger_price_usd,
+        amount: entry.level.amount.to_string(),
+        amount_decimals: entry.level.amount_decimals,
+        slippage_bps: entry.level.slippage_bps,
     }
 }
 
@@ -149,6 +256,33 @@ fn order_view(order: &Order) -> OrderView {
         swap_attempts: order.swap_attempts,
         created_at: order.created_at,
     }
+}
+
+fn dashboard_level_view(
+    entry: &StrategyLevel,
+    runtime_state: RuntimeLevelState,
+    resolver: &TokenResolver,
+) -> anyhow::Result<DashboardLevelView> {
+    let direction = trade_direction(&entry.strategy, entry.level.side);
+    let price_pair = resolver.price_pair(&entry.strategy).with_context(|| {
+        format!(
+            "strategy {} has no configured price pair",
+            entry.strategy.id
+        )
+    })?;
+    Ok(DashboardLevelView {
+        id: entry.level.id.clone(),
+        strategy_id: entry.strategy.id.clone(),
+        side: entry.level.side.as_str().to_string(),
+        token_in: direction.token_in.to_owned(),
+        token_out: direction.token_out.to_owned(),
+        trigger_price_usd: entry.level.trigger_price_usd,
+        price_pair,
+        amount: entry.level.amount.to_string(),
+        amount_decimals: entry.level.amount_decimals,
+        slippage_bps: entry.level.slippage_bps,
+        runtime_state,
+    })
 }
 
 // Expose the exact phase for debugging stuck orders.
@@ -168,6 +302,30 @@ fn phase(order: &Order) -> &'static str {
 
 #[tool_router]
 impl AdminHandler {
+    #[tool(description = "List every configured strategy market.")]
+    async fn strategies(&self) -> Result<Json<StrategyList>, McpError> {
+        let strategies = self.strategies.list_strategies().await.map_err(to_mcp)?;
+        Ok(Json(StrategyList {
+            strategies: strategies.iter().map(strategy_view).collect(),
+        }))
+    }
+
+    #[tool(
+        description = "Store a strategy market. An existing market can change only before its first level is added."
+    )]
+    async fn set_strategy(
+        &self,
+        Parameters(draft): Parameters<StrategyDraft>,
+    ) -> Result<Json<StrategyView>, McpError> {
+        let strategy =
+            validate_strategy(&self.evm, self.prices.as_ref(), &draft).map_err(to_mcp)?;
+        self.strategies
+            .upsert_strategy(&strategy)
+            .await
+            .map_err(to_mcp)?;
+        Ok(Json(strategy_view(&strategy)))
+    }
+
     #[tool(
         description = "Report what the running daemon is doing: version, whether broadcasting is allowed, how many rules are stored, and how many orders sit in each status. Check allow_broadcast before telling anyone a rule will trade for real."
     )]
@@ -182,7 +340,7 @@ impl AdminHandler {
         }
         Ok(Json(DaemonStatus {
             version: env!("CARGO_PKG_VERSION").to_string(),
-            allow_broadcast: self.allow_broadcast,
+            allow_broadcast: self.dashboard.runtime.snapshot().allow_broadcast,
             levels: levels.len(),
             orders: counts,
         }))
@@ -216,21 +374,31 @@ impl AdminHandler {
     }
 
     #[tool(
-        description = "Store a standing rule, replacing any rule with the same id. The chain and both tokens must be configured, the amount is in whole units of token_in, and slippage_bps must not exceed the configured maximum. A stored rule will spend funds once its price is crossed, so show it to the user before calling this."
+        description = "Store a level for an existing strategy, replacing any level with the same id. Buy spends the strategy's quote token for its base token; sell spends base for quote. The amount is in whole units of that input token. A stored level can spend funds once its price is crossed, so show it to the user before calling this."
     )]
     async fn set_level(
         &self,
         Parameters(draft): Parameters<LevelDraft>,
     ) -> Result<Json<LevelView>, McpError> {
+        let strategy = self
+            .strategies
+            .get_strategy(&draft.strategy_id)
+            .await
+            .map_err(to_mcp)?
+            .ok_or_else(|| McpError::invalid_params("strategy does not exist", None))?;
         let level = validate_level(
             &self.evm,
             self.max_slippage_bps,
             self.prices.as_ref(),
+            &strategy,
             &draft,
         )
         .map_err(to_mcp)?;
-        self.levels.upsert_level(&level).await.map_err(to_mcp)?;
-        Ok(Json(level_view(&level)))
+        self.levels
+            .upsert_level(&level, &strategy)
+            .await
+            .map_err(to_mcp)?;
+        Ok(Json(level_view(&StrategyLevel { strategy, level })))
     }
 
     #[tool(
@@ -260,9 +428,9 @@ impl ServerHandler for AdminHandler {
                 env!("CARGO_PKG_VERSION"),
             ))
             .with_instructions(
-                "This is a running tempo-agentic daemon. Rules stored here spend real funds \
-                 once their price is crossed, so read status first, show a rule to the user \
-                 in full, and only call set_level after an explicit yes. Orders are the \
+                "This is a running tempo-agentic daemon. Strategies define markets and levels \
+                 spend funds once their price is crossed, so read status first, show changes to \
+                 the user in full, and only call set_strategy or set_level after an explicit yes. Orders are the \
                  record of what already happened and cannot be edited from here.",
             )
     }

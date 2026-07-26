@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use tempo_agentic_config::EvmConfig;
 use tempo_agentic_price::PricePair;
-use tempo_agentic_strategy::{Level, base_token};
+use tempo_agentic_strategy::Strategy;
 
 /// Maps configured chain and token names to feed identifiers.
 pub struct TokenResolver {
@@ -38,10 +38,12 @@ impl TokenResolver {
         Self { chains }
     }
 
-    /// Resolves the level's priced pair, or `None` if unconfigured.
-    pub fn price_pair(&self, level: &Level) -> Option<PricePair> {
-        let chain = self.chains.get(&level.chain.to_ascii_lowercase())?;
-        let address = chain.tokens.get(&base_token(level).to_ascii_lowercase())?;
+    /// Resolves the strategy's priced pair, or `None` if unconfigured.
+    pub fn price_pair(&self, strategy: &Strategy) -> Option<PricePair> {
+        let chain = self.chains.get(&strategy.chain.to_ascii_lowercase())?;
+        let address = chain
+            .tokens
+            .get(&strategy.base_token.to_ascii_lowercase())?;
         Some(PricePair::new(chain.chain_id, address.clone()))
     }
 }

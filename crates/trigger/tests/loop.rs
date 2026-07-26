@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,9 +14,13 @@ use tempo_agentic_domain::{
     VenueName,
 };
 use tempo_agentic_price::{PricePair, PriceTick};
-use tempo_agentic_storage::{SqliteLevelStore, SqliteOrderStore, connect_pool};
-use tempo_agentic_strategy::{Level, LevelStore, Order, OrderState, OrderStore, Side};
-use tempo_agentic_trigger::{TokenResolver, TriggerDeps, run};
+use tempo_agentic_storage::{
+    LockFile, SqliteLevelStore, SqliteOrderStore, SqliteStrategyStore, initialize_new_under_lock,
+};
+use tempo_agentic_strategy::{
+    Level, LevelStore, Order, OrderState, OrderStore, Side, Strategy, StrategyLevel, StrategyStore,
+};
+use tempo_agentic_trigger::{RuntimeStatus, TokenResolver, TriggerDeps, run};
 use tokio::sync::{Notify, mpsc};
 
 const BASE_ID: u64 = 8453;
@@ -26,6 +31,7 @@ const USDC: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 struct ScriptedVenue {
     accepts: bool,
     calls: Arc<AtomicUsize>,
+    request: Arc<Mutex<Option<(String, String, String)>>>,
 }
 
 #[async_trait]
@@ -36,6 +42,11 @@ impl TradeVenue for ScriptedVenue {
 
     async fn quote(&self, request: &QuoteTradeRequest) -> anyhow::Result<QuoteDraft> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        *self.request.lock().unwrap() = Some((
+            request.token_in.clone(),
+            request.token_out.clone(),
+            request.amount.clone(),
+        ));
         anyhow::ensure!(self.accepts, "pre-flight rejected: insufficient balance");
         Ok(QuoteDraft {
             venue: "uniswap".into(),
@@ -71,9 +82,12 @@ impl TradeVenue for ScriptedVenue {
 }
 
 struct Fixture {
+    strategies: SqliteStrategyStore,
     levels: Arc<SqliteLevelStore>,
     orders: Arc<SqliteOrderStore>,
     calls: Arc<AtomicUsize>,
+    request: Arc<Mutex<Option<(String, String, String)>>>,
+    runtime: Arc<RuntimeStatus>,
     path: PathBuf,
 }
 
@@ -87,10 +101,14 @@ impl Fixture {
                 .unwrap()
                 .as_nanos()
         ));
-        let pool = connect_pool(&path).await.unwrap();
+        let lock = LockFile::acquire(LockFile::path_for(&path)).unwrap();
+        let pool = initialize_new_under_lock(&path, &lock).await.unwrap();
+        let strategies = SqliteStrategyStore::new(pool.clone());
         let levels = Arc::new(SqliteLevelStore::new(pool.clone()));
         let orders = Arc::new(SqliteOrderStore::new(pool));
         let calls = Arc::new(AtomicUsize::new(0));
+        let request = Arc::new(Mutex::new(None));
+        let runtime = Arc::new(RuntimeStatus::new(false, 30));
 
         let deps = TriggerDeps {
             levels: levels.clone(),
@@ -98,18 +116,34 @@ impl Fixture {
             venues: vec![Arc::new(ScriptedVenue {
                 accepts,
                 calls: calls.clone(),
+                request: request.clone(),
             })],
             resolver: resolver(),
+            runtime: runtime.clone(),
         };
         (
             Self {
+                strategies,
                 levels,
                 orders,
                 calls,
+                request,
+                runtime,
                 path,
             },
             deps,
         )
+    }
+
+    async fn store(&self, entry: &StrategyLevel) {
+        self.strategies
+            .upsert_strategy(&entry.strategy)
+            .await
+            .unwrap();
+        self.levels
+            .upsert_level(&entry.level, &entry.strategy)
+            .await
+            .unwrap();
     }
 
     fn cleanup(self) {
@@ -148,18 +182,24 @@ fn resolver() -> TokenResolver {
     })
 }
 
-fn level() -> Level {
-    Level {
-        id: "l-1".into(),
-        venue: VenueName::Uniswap,
-        chain: "base".into(),
-        token_in: "USDC".into(),
-        token_out: "WETH".into(),
-        side: Side::Buy,
-        trigger_price_usd: 3_000.0,
-        amount: U256::from(1_000_000u64),
-        amount_decimals: 6,
-        slippage_bps: 50,
+fn level() -> StrategyLevel {
+    StrategyLevel {
+        strategy: Strategy {
+            id: "s-1".into(),
+            venue: VenueName::Uniswap,
+            chain: "base".into(),
+            base_token: "WETH".into(),
+            quote_token: "USDC".into(),
+        },
+        level: Level {
+            id: "l-1".into(),
+            strategy_id: "s-1".into(),
+            side: Side::Buy,
+            trigger_price_usd: 3_000.0,
+            amount: U256::from(1_000_000u64),
+            amount_decimals: 6,
+            slippage_bps: 50,
+        },
     }
 }
 
@@ -186,7 +226,7 @@ async fn drive(deps: TriggerDeps, waker: Arc<Notify>, ticks: Vec<PriceTick>) {
 #[tokio::test]
 async fn a_fired_level_becomes_a_stored_order() {
     let (fixture, deps) = Fixture::new("creates", true).await;
-    fixture.levels.upsert_level(&level()).await.unwrap();
+    fixture.store(&level()).await;
     let waker = Arc::new(Notify::new());
 
     drive(deps, waker.clone(), vec![tick(2_999.0, 100)]).await;
@@ -195,6 +235,12 @@ async fn a_fired_level_becomes_a_stored_order() {
     assert_eq!(orders.len(), 1);
     let order = &orders[0];
     assert_eq!(order.level_id, "l-1");
+    assert_eq!(order.token_in, "USDC");
+    assert_eq!(order.token_out, "WETH");
+    assert_eq!(
+        fixture.request.lock().unwrap().as_ref().unwrap(),
+        &("USDC".into(), "WETH".into(), "1".into())
+    );
     assert!(matches!(
         order.state,
         OrderState::SwapReady {
@@ -215,9 +261,30 @@ async fn a_fired_level_becomes_a_stored_order() {
 }
 
 #[tokio::test]
+async fn sell_quotes_base_to_quote_and_snapshots_the_same_direction() {
+    let (fixture, deps) = Fixture::new("sell-direction", true).await;
+    let mut entry = level();
+    entry.level.side = Side::Sell;
+    entry.level.amount = U256::from(1_000_000_000_000_000_000u64);
+    entry.level.amount_decimals = 18;
+    fixture.store(&entry).await;
+
+    drive(deps, Arc::new(Notify::new()), vec![tick(3_001.0, 100)]).await;
+
+    let order = fixture.orders.list_orders().await.unwrap().remove(0);
+    assert_eq!(order.token_in, "WETH");
+    assert_eq!(order.token_out, "USDC");
+    assert_eq!(
+        fixture.request.lock().unwrap().as_ref().unwrap(),
+        &("WETH".into(), "USDC".into(), "1".into())
+    );
+    fixture.cleanup();
+}
+
+#[tokio::test]
 async fn a_rejected_preflight_creates_nothing_and_the_loop_survives() {
     let (fixture, deps) = Fixture::new("rejected", false).await;
-    fixture.levels.upsert_level(&level()).await.unwrap();
+    fixture.store(&level()).await;
 
     drive(
         deps,
@@ -236,7 +303,7 @@ async fn a_rejected_preflight_creates_nothing_and_the_loop_survives() {
 #[tokio::test]
 async fn a_rejected_level_goes_quiet_instead_of_requoting() {
     let (fixture, deps) = Fixture::new("quiet", false).await;
-    fixture.levels.upsert_level(&level()).await.unwrap();
+    fixture.store(&level()).await;
 
     drive(
         deps,
@@ -255,6 +322,10 @@ async fn a_rejected_level_goes_quiet_instead_of_requoting() {
         1,
         "only the first tick should reach the venue"
     );
+    assert!(
+        fixture.runtime.snapshot().quiet_until.contains_key("l-1"),
+        "the trigger and dashboard snapshot must share quiet_until"
+    );
     fixture.cleanup();
 }
 
@@ -262,7 +333,7 @@ async fn a_rejected_level_goes_quiet_instead_of_requoting() {
 #[tokio::test]
 async fn the_same_tick_twice_yields_one_order() {
     let (fixture, deps) = Fixture::new("idempotent", true).await;
-    fixture.levels.upsert_level(&level()).await.unwrap();
+    fixture.store(&level()).await;
 
     drive(
         deps,
@@ -278,7 +349,7 @@ async fn the_same_tick_twice_yields_one_order() {
 #[tokio::test]
 async fn a_level_that_already_acted_never_reaches_the_venue() {
     let (fixture, deps) = Fixture::new("spent", true).await;
-    fixture.levels.upsert_level(&level()).await.unwrap();
+    fixture.store(&level()).await;
 
     // First tick spends the level, second finds it taken.
     drive(
@@ -300,7 +371,7 @@ async fn a_level_that_already_acted_never_reaches_the_venue() {
 #[tokio::test]
 async fn a_tick_that_fires_nothing_does_not_wake_anyone() {
     let (fixture, deps) = Fixture::new("no-wake", true).await;
-    fixture.levels.upsert_level(&level()).await.unwrap();
+    fixture.store(&level()).await;
     let waker = Arc::new(Notify::new());
 
     // Above the buy threshold: nothing fires.
@@ -320,7 +391,7 @@ async fn a_tick_that_fires_nothing_does_not_wake_anyone() {
 #[tokio::test]
 async fn a_level_that_just_failed_is_left_to_rest() {
     let (fixture, deps) = Fixture::new("cooldown", true).await;
-    fixture.levels.upsert_level(&level()).await.unwrap();
+    fixture.store(&level()).await;
 
     let mut failed = Order::new("o-old".into(), &level(), plan(), now_secs());
     failed.state = OrderState::Failed {

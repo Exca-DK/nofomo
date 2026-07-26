@@ -1,22 +1,29 @@
+pub mod dashboard;
 pub mod logging;
 pub mod provision;
 pub mod wiring;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use tempo_agentic_config::Config;
-use tempo_agentic_mcp::{AdminHandler, AdminServer, manifest_path};
+use tempo_agentic_mcp::{AdminHandler, AdminServer, DashboardDeps, manifest_path};
 use tempo_agentic_orchestrator::Waker;
 use tempo_agentic_price::{
     DEFAULT_MAX_AGE_SECS, DEFAULT_MAX_MOVE_BPS, FilteredSource, PriceSource,
 };
 use tempo_agentic_price_dexpaprika::DexPaprikaSource;
-use tempo_agentic_storage::{LockFile, SqliteLevelStore, SqliteOrderStore, connect_pool};
-use tempo_agentic_strategy::OrderStore;
-use tempo_agentic_trigger::TokenResolver;
+use tempo_agentic_storage::{
+    LockFile, SqliteLevelStore, SqliteOrderStore, SqliteStrategyStore, initialize_new_under_lock,
+    open_existing_current,
+};
+use tempo_agentic_strategy::{LevelStore, OrderStore, StrategyStore};
+use tempo_agentic_trigger::{
+    RuntimeStatus, TokenResolver, validate_stored_level, validate_strategy_model,
+};
 use tokio::sync::mpsc;
 
 /// Maximum execution-loop sleep between receipt checks.
@@ -60,29 +67,51 @@ pub async fn run(options: Options) -> Result<()> {
         );
     }
 
-    let pool = connect_pool(&database).await?;
+    let pool = if database.exists() {
+        open_existing_current(&database).await?
+    } else {
+        initialize_new_under_lock(&database, &_lock).await?
+    };
+    let strategies = Arc::new(SqliteStrategyStore::new(pool.clone()));
     let levels = Arc::new(SqliteLevelStore::new(pool.clone()));
     let orders = Arc::new(SqliteOrderStore::new(pool));
 
-    let wiring = wiring::build(
-        &config,
-        options.allow_broadcast,
-        levels.clone(),
-        orders.clone(),
-    )?;
     let source: Arc<dyn PriceSource> = Arc::new(FilteredSource::new(
         DexPaprikaSource::new(config.dexpaprika_stream_url.clone()),
         DEFAULT_MAX_AGE_SECS,
         DEFAULT_MAX_MOVE_BPS,
     ));
+    preflight(
+        &config,
+        strategies.as_ref(),
+        levels.as_ref(),
+        source.as_ref(),
+    )
+    .await?;
+
+    let runtime = Arc::new(RuntimeStatus::new(
+        options.allow_broadcast,
+        DEFAULT_MAX_AGE_SECS,
+    ));
+    let wiring = wiring::build(
+        &config,
+        options.allow_broadcast,
+        levels.clone(),
+        orders.clone(),
+        runtime.clone(),
+    )?;
 
     let admin = AdminServer::start(
         AdminHandler::new(
+            strategies.clone(),
             levels.clone(),
             orders.clone(),
+            DashboardDeps {
+                store: strategies,
+                runtime: runtime.clone(),
+            },
             config.evm.clone(),
             config.max_slippage_bps,
-            options.allow_broadcast,
             source.clone(),
         ),
         &database,
@@ -110,6 +139,7 @@ pub async fn run(options: Options) -> Result<()> {
         TokenResolver::from_config(&config.evm),
         source,
         ticks_tx,
+        runtime,
     ));
 
     tokio::select! {
@@ -122,6 +152,43 @@ pub async fn run(options: Options) -> Result<()> {
     orchestrator.abort();
     producer.abort();
     tracing::info!("daemon stopped");
+    Ok(())
+}
+
+/// Refuses startup before any task exists when stored authoring no longer matches config.
+async fn preflight(
+    config: &Config,
+    strategies: &dyn StrategyStore,
+    levels: &dyn LevelStore,
+    prices: &dyn PriceSource,
+) -> Result<()> {
+    let mut errors: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for strategy in strategies.list_strategies().await? {
+        if let Err(error) = validate_strategy_model(&config.evm, prices, &strategy) {
+            errors
+                .entry(strategy.id)
+                .or_default()
+                .push(error.to_string());
+        }
+    }
+    for entry in levels.list_levels().await? {
+        if let Err(error) =
+            validate_stored_level(&config.evm, config.max_slippage_bps, prices, &entry)
+        {
+            errors
+                .entry(entry.strategy.id)
+                .or_default()
+                .push(error.to_string());
+        }
+    }
+    if !errors.is_empty() {
+        let details = errors
+            .into_iter()
+            .map(|(id, reasons)| format!("{id}: {}", reasons.join("; ")))
+            .collect::<Vec<_>>()
+            .join("\n");
+        bail!("stored strategies do not match the current config:\n{details}");
+    }
     Ok(())
 }
 

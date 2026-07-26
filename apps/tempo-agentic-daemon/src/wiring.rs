@@ -9,7 +9,7 @@ use tempo_agentic_domain::{ChainClient, Signer, TradeVenue};
 use tempo_agentic_graph::GraphClient;
 use tempo_agentic_orchestrator::ExecDeps;
 use tempo_agentic_strategy::{LevelStore, OrderStore};
-use tempo_agentic_trigger::{TokenResolver, TriggerDeps};
+use tempo_agentic_trigger::{RuntimeStatus, TokenResolver, TriggerDeps};
 use tempo_agentic_uniswap::UniswapVenue;
 use tempo_agentic_vault::EvmSigner;
 
@@ -24,6 +24,7 @@ pub fn build(
     allow_broadcast: bool,
     levels: Arc<dyn LevelStore>,
     orders: Arc<dyn OrderStore>,
+    runtime: Arc<RuntimeStatus>,
 ) -> Result<Wiring> {
     let graph = GraphClient::new(&config.graph)?;
 
@@ -61,6 +62,7 @@ pub fn build(
             orders,
             venues,
             resolver: TokenResolver::from_config(&config.evm),
+            runtime,
         },
     })
 }
