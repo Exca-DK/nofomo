@@ -14,6 +14,15 @@ use tempo_agentic_domain::{
 };
 use tempo_agentic_graph::GraphClient;
 
+mod amount;
+mod validate;
+
+use amount::{
+    api_gas_limit, compare_decimal_integers, compare_scaled_amounts, decimal_value,
+    slippage_percent_json, validate_decimal_integer,
+};
+use validate::{string_field, validate_approval_calldata, validate_quote, validate_transaction};
+
 /// Uniswap API venue that quotes and builds but never signs or broadcasts.
 #[derive(Clone)]
 pub struct UniswapVenue {
@@ -38,7 +47,7 @@ struct Candidate {
 /// as the approval spender on every chain, so a response naming anything else is
 /// refused rather than signed. Re-derive it from the `spender` inside
 /// `/check_approval`'s calldata if Uniswap ever moves it.
-const PROXY_APPROVAL_ADDRESS: &str = "0x02E5be68D46DAc0B524905bfF209cf47EE6dB2a9";
+pub(crate) const PROXY_APPROVAL_ADDRESS: &str = "0x02E5be68D46DAc0B524905bfF209cf47EE6dB2a9";
 
 impl UniswapVenue {
     pub fn new(
@@ -458,276 +467,6 @@ fn steps_from_check_approval(approval: &Value) -> Vec<ExecStep> {
     steps
 }
 
-/// Reads an API transaction value from decimal or hex.
-fn decimal_value(transaction: &Value) -> Result<String> {
-    let raw = transaction
-        .get("value")
-        .and_then(Value::as_str)
-        .unwrap_or("0");
-    if let Some(hex) = raw.strip_prefix("0x") {
-        return hex_to_decimal(hex);
-    }
-    validate_decimal_integer(raw).context("transaction value is not a decimal integer")?;
-    Ok(raw.to_string())
-}
-
-/// The gas limit the venue's API supplied, if any.
-fn api_gas_limit(transaction: &Value) -> Result<Option<u64>> {
-    for field in ["gasLimit", "gas"] {
-        let Some(raw) = transaction.get(field) else {
-            continue;
-        };
-        if let Some(number) = raw.as_u64() {
-            return Ok(Some(number));
-        }
-        let Some(text) = raw.as_str() else { continue };
-        let parsed = match text.strip_prefix("0x") {
-            Some(hex) => u64::from_str_radix(hex, 16),
-            None => text.parse::<u64>(),
-        };
-        return parsed
-            .map(Some)
-            .with_context(|| format!("transaction {field} is not a u64: {text}"));
-    }
-    Ok(None)
-}
-
-fn hex_to_decimal(hex: &str) -> Result<String> {
-    if hex.is_empty() || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        bail!("expected a hex quantity");
-    }
-    let mut digits: Vec<u8> = vec![0];
-    for byte in hex.bytes() {
-        let mut carry = char::from(byte).to_digit(16).expect("checked hex digit");
-        for digit in digits.iter_mut() {
-            let product = u32::from(*digit) * 16 + carry;
-            *digit = (product % 10) as u8;
-            carry = product / 10;
-        }
-        while carry > 0 {
-            digits.push((carry % 10) as u8);
-            carry /= 10;
-        }
-    }
-    let text: String = digits
-        .iter()
-        .rev()
-        .map(|digit| char::from(b'0' + digit))
-        .collect();
-    let trimmed = text.trim_start_matches('0');
-    Ok(if trimmed.is_empty() {
-        "0".to_string()
-    } else {
-        trimmed.to_string()
-    })
-}
-
-fn validate_transaction(
-    transaction: &Value,
-    wallet: &str,
-    chain_id: u64,
-    expected_to: &str,
-    expected_value: &str,
-) -> Result<()> {
-    let from = string_field(transaction, "from")?;
-    if !from.eq_ignore_ascii_case(wallet) {
-        bail!("refusing transaction for unexpected sender {from}");
-    }
-    let actual_chain = transaction
-        .get("chainId")
-        .and_then(|value| {
-            value
-                .as_u64()
-                .or_else(|| value.as_str().and_then(|raw| raw.parse().ok()))
-        })
-        .context("transaction has no numeric chainId")?;
-    if actual_chain != chain_id {
-        bail!("refusing transaction for chain {actual_chain}; expected {chain_id}");
-    }
-    let to = string_field(transaction, "to")?;
-    validate_evm_address(to).context("transaction target")?;
-    if !to.eq_ignore_ascii_case(expected_to) {
-        bail!("refusing transaction for unexpected target {to}");
-    }
-    let data = string_field(transaction, "data")?;
-    let calldata = data.strip_prefix("0x").unwrap_or("");
-    if calldata.len() < 8
-        || calldata.len() % 2 != 0
-        || !calldata.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
-        bail!("refusing transaction with invalid calldata");
-    }
-    let value = transaction
-        .get("value")
-        .and_then(Value::as_str)
-        .context("transaction has no value")?;
-    if !same_quantity(value, expected_value)? {
-        bail!("refusing transaction with unexpected native value {value}");
-    }
-    Ok(())
-}
-
-fn validate_quote(
-    quote: &Value,
-    chain_id: u64,
-    wallet: &str,
-    input_token: &str,
-    output_token: &str,
-    input_amount: &str,
-) -> Result<()> {
-    let quote_chain = quote
-        .get("chainId")
-        .and_then(|value| {
-            value
-                .as_u64()
-                .or_else(|| value.as_str().and_then(|raw| raw.parse().ok()))
-        })
-        .context("Uniswap quote has no numeric chainId")?;
-    if quote_chain != chain_id {
-        bail!("Uniswap quote returned unexpected chain {quote_chain}");
-    }
-    for (pointer, expected, name) in [
-        ("/swapper", wallet, "swapper"),
-        ("/input/token", input_token, "input token"),
-        ("/output/token", output_token, "output token"),
-        ("/input/amount", input_amount, "input amount"),
-    ] {
-        let actual = quote
-            .pointer(pointer)
-            .and_then(Value::as_str)
-            .with_context(|| format!("Uniswap quote has no {name}"))?;
-        let matches = if name == "input amount" {
-            same_quantity(actual, expected)?
-        } else {
-            actual.eq_ignore_ascii_case(expected)
-        };
-        if !matches {
-            bail!("Uniswap quote returned unexpected {name}");
-        }
-    }
-    if quote.get("tradeType").and_then(Value::as_str) != Some("EXACT_INPUT") {
-        bail!("Uniswap quote is not exact-input");
-    }
-    Ok(())
-}
-
-fn validate_approval_calldata(transaction: &Value, expected_spender: &str) -> Result<()> {
-    let data = string_field(transaction, "data")?;
-    let data = data.strip_prefix("0x").unwrap_or("");
-    if data.len() != 136 || !data.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        bail!("approval calldata has an invalid ABI length");
-    }
-    if !data[..8].eq_ignore_ascii_case("095ea7b3") {
-        bail!("approval calldata does not call approve(address,uint256)");
-    }
-    let spender = &data[8 + 24..8 + 64];
-    if !spender.eq_ignore_ascii_case(expected_spender.trim_start_matches("0x")) {
-        // Name both: the usual cause is Uniswap moving the contract, and the
-        // addresses are the whole diagnosis.
-        bail!("approval calldata targets 0x{spender}, not the expected {expected_spender}");
-    }
-    Ok(())
-}
-
-fn validate_evm_address(value: &str) -> Result<()> {
-    let raw = value.strip_prefix("0x").unwrap_or(value);
-    if raw.len() != 40 || !raw.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        bail!("expected a 20-byte hex address");
-    }
-    Ok(())
-}
-
-fn validate_decimal_integer(value: &str) -> Result<()> {
-    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-        bail!("expected an unsigned decimal integer");
-    }
-    Ok(())
-}
-
-fn same_quantity(left: &str, right: &str) -> Result<bool> {
-    fn normalize(value: &str) -> Result<String> {
-        if let Some(hex) = value.strip_prefix("0x") {
-            if hex.is_empty() || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                bail!("invalid hex quantity");
-            }
-            return Ok(hex.trim_start_matches('0').to_ascii_lowercase());
-        }
-        validate_decimal_integer(value)?;
-        decimal_to_hex(value)
-    }
-    Ok(normalize(left)? == normalize(right)?)
-}
-
-fn decimal_to_hex(value: &str) -> Result<String> {
-    validate_decimal_integer(value)?;
-    let mut digits = value.bytes().map(|byte| byte - b'0').collect::<Vec<_>>();
-    let mut result = Vec::new();
-    while digits.iter().any(|digit| *digit != 0) {
-        let mut carry = 0_u16;
-        let mut quotient = Vec::with_capacity(digits.len());
-        for digit in digits {
-            let current = carry * 10 + u16::from(digit);
-            if !quotient.is_empty() || current / 16 != 0 {
-                quotient.push((current / 16) as u8);
-            }
-            carry = current % 16;
-        }
-        result.push(b"0123456789abcdef"[usize::from(carry)]);
-        digits = quotient;
-    }
-    if result.is_empty() {
-        return Ok(String::new());
-    }
-    result.reverse();
-    Ok(String::from_utf8(result).expect("hex conversion emits ASCII"))
-}
-
-fn compare_decimal_integers(left: &str, right: &str) -> Ordering {
-    let left = left.trim_start_matches('0');
-    let right = right.trim_start_matches('0');
-    left.len().cmp(&right.len()).then_with(|| left.cmp(right))
-}
-
-fn compare_scaled_amounts(
-    left: &str,
-    left_decimals: u8,
-    right: &str,
-    right_decimals: u8,
-) -> Ordering {
-    let decimals = left_decimals.max(right_decimals);
-    let left = format!(
-        "{}{}",
-        left.trim_start_matches('0'),
-        "0".repeat(usize::from(decimals - left_decimals))
-    );
-    let right = format!(
-        "{}{}",
-        right.trim_start_matches('0'),
-        "0".repeat(usize::from(decimals - right_decimals))
-    );
-    compare_decimal_integers(&left, &right)
-}
-
-fn slippage_percent_json(slippage_bps: u16) -> Result<Value> {
-    let whole = slippage_bps / 100;
-    let fraction = slippage_bps % 100;
-    let value = if fraction == 0 {
-        whole.to_string()
-    } else if fraction.is_multiple_of(10) {
-        format!("{whole}.{}", fraction / 10)
-    } else {
-        format!("{whole}.{fraction:02}")
-    };
-    serde_json::from_str(&value).context("cannot encode slippage as JSON number")
-}
-
-fn string_field<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
-    value
-        .get(field)
-        .and_then(Value::as_str)
-        .with_context(|| format!("transaction has no {field}"))
-}
-
 fn compact(value: &Value) -> String {
     let value = value.to_string();
     if value.len() > 500 {
@@ -743,22 +482,7 @@ mod tests {
 
     use tempo_agentic_domain::ExecStep;
 
-    use super::{
-        PROXY_APPROVAL_ADDRESS, api_gas_limit, compare_scaled_amounts, decimal_value,
-        hex_to_decimal, slippage_percent_json, steps_from_check_approval, validate_transaction,
-    };
-
-    #[test]
-    fn converts_rpc_hex_without_uint256_truncation() {
-        assert_eq!(hex_to_decimal("0100").unwrap(), "256");
-        assert_eq!(hex_to_decimal("00ff").unwrap(), "255");
-        assert_eq!(
-            hex_to_decimal("10000000000000000").unwrap(),
-            "18446744073709551616"
-        );
-        assert_eq!(hex_to_decimal("0").unwrap(), "0");
-        assert!(hex_to_decimal("zz").is_err());
-    }
+    use super::steps_from_check_approval;
 
     #[test]
     fn approval_response_decides_the_step_sequence() {
@@ -775,73 +499,5 @@ mod tests {
             vec![ExecStep::Swap]
         );
         assert_eq!(steps_from_check_approval(&json!({})), vec![ExecStep::Swap]);
-    }
-
-    #[test]
-    fn reads_gas_limit_and_value_in_either_encoding() {
-        assert_eq!(
-            api_gas_limit(&json!({"gasLimit": "0x5208"})).unwrap(),
-            Some(21_000)
-        );
-        assert_eq!(
-            api_gas_limit(&json!({"gas": "21000"})).unwrap(),
-            Some(21_000)
-        );
-        assert_eq!(api_gas_limit(&json!({"gas": 21000})).unwrap(), Some(21_000));
-        assert_eq!(api_gas_limit(&json!({})).unwrap(), None);
-        assert!(api_gas_limit(&json!({"gas": "not-a-number"})).is_err());
-
-        assert_eq!(decimal_value(&json!({"value": "0x2a"})).unwrap(), "42");
-        assert_eq!(decimal_value(&json!({"value": "42"})).unwrap(), "42");
-        assert_eq!(decimal_value(&json!({})).unwrap(), "0");
-    }
-
-    #[test]
-    fn rejects_wrong_transaction_chain() {
-        let transaction = json!({
-            "from": "0x1111111111111111111111111111111111111111",
-            "to": "0x2222222222222222222222222222222222222222",
-            "data": "0x12345678aa",
-            "chainId": 8453,
-            "value": "0"
-        });
-        assert!(
-            validate_transaction(
-                &transaction,
-                "0x1111111111111111111111111111111111111111",
-                1,
-                "0x2222222222222222222222222222222222222222",
-                "0"
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn rejects_wrong_transaction_sender_and_target() {
-        let transaction = json!({
-            "from": "0x9999999999999999999999999999999999999999",
-            "to": PROXY_APPROVAL_ADDRESS,
-            "data": "0x12345678",
-            "chainId": 1,
-            "value": "0"
-        });
-        assert!(
-            validate_transaction(
-                &transaction,
-                "0x1111111111111111111111111111111111111111",
-                1,
-                PROXY_APPROVAL_ADDRESS,
-                "0"
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn ranks_scaled_outputs_exactly_and_encodes_bps() {
-        assert!(compare_scaled_amounts("1000001", 6, "1000000000000000000", 18).is_gt());
-        assert_eq!(slippage_percent_json(1).unwrap(), json!(0.01));
-        assert_eq!(slippage_percent_json(50).unwrap(), json!(0.5));
     }
 }
