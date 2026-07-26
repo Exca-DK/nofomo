@@ -63,6 +63,20 @@ print(f"{buy:.8f} {sell:.8f} {1 / sell:.9f}")' "$1" "$2" "$3"
 }
 ```
 
+### Or let make do it
+
+`make grid` is sections 4 and 5 in one target: it builds, bootstraps, reads both
+prices and writes both grids. Everything is tunable:
+
+```bash
+make grid
+make grid GRID_RUNGS=3 GRID_STEP_BPS=100 GRID_USD=2 GRID_SLIPPAGE_BPS=50
+```
+
+It takes the token addresses from the config the daemon itself loads, so a grid
+cannot end up priced off some other token this repo happens to name. Like the
+commands below it writes to the database directly, so `run` has to be stopped.
+
 ## 4. Base — ETH/USDC
 
 ```bash
