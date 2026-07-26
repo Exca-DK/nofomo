@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tempo_agentic_config::EvmConfig;
 use tempo_agentic_mcp::{AdminHandler, AdminServer, manifest_path};
 use tempo_agentic_price_dexpaprika::DexPaprikaSource;
 use tempo_agentic_storage::{SqliteLevelStore, SqliteOrderStore, connect_pool};
+use tempo_agentic_trigger::TokenResolver;
 
 struct Fixture {
     server: AdminServer,
@@ -23,7 +23,7 @@ impl Fixture {
         let handler = AdminHandler::new(
             Arc::new(SqliteLevelStore::new(pool.clone())),
             Arc::new(SqliteOrderStore::new(pool)),
-            EvmConfig { chains: Vec::new() },
+            Arc::new(TokenResolver::default()),
             500,
             false,
             Arc::new(DexPaprikaSource::new("https://example.invalid")),

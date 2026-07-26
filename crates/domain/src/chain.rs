@@ -69,6 +69,26 @@ impl std::fmt::Display for ChainId {
     }
 }
 
+/// Normalizes padded Sui addresses.
+pub fn normalize_coin_type(coin_type: &str) -> String {
+    let Some((address, rest)) = coin_type.split_once("::") else {
+        return coin_type.to_string();
+    };
+    let trimmed = address.trim_start_matches("0x").trim_start_matches('0');
+    // Preserve zero.
+    let trimmed = if trimmed.is_empty() { "0" } else { trimmed };
+    format!("0x{trimmed}::{rest}")
+}
+
+/// Validates a fully qualified, lowercase-prefixed Sui coin type.
+pub fn validate_coin_type(coin_type: &str) -> Result<()> {
+    let parts: Vec<&str> = coin_type.split("::").collect();
+    if parts.len() < 3 || !parts[0].starts_with("0x") || parts.iter().any(|part| part.is_empty()) {
+        bail!("{coin_type} is not a fully-qualified Sui coin type");
+    }
+    Ok(())
+}
+
 /// Chain operations used by execution.
 #[async_trait]
 pub trait ChainClient: Send + Sync {
@@ -115,5 +135,29 @@ mod tests {
     fn every_chain_reports_the_family_its_key_belongs_to() {
         assert_eq!(ChainId::Evm(8453).family(), ChainFamily::Evm);
         assert_eq!(ChainId::Sui.family(), ChainFamily::Sui);
+    }
+
+    #[test]
+    fn padded_and_short_addresses_name_the_same_coin() {
+        let short = super::normalize_coin_type("0x2::sui::SUI");
+        let padded = super::normalize_coin_type(
+            "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI",
+        );
+        assert_eq!(short, padded);
+        assert_eq!(short, "0x2::sui::SUI");
+    }
+
+    #[test]
+    fn the_zero_address_survives_normalization() {
+        assert_eq!(super::normalize_coin_type("0x0::a::B"), "0x0::a::B");
+    }
+
+    #[test]
+    fn a_coin_type_must_be_fully_qualified_and_lowercase_prefixed() {
+        assert!(super::validate_coin_type("0x2::sui::SUI").is_ok());
+        assert!(super::validate_coin_type("0X2::SUI::SUI").is_err());
+        assert!(super::validate_coin_type("0x2::sui").is_err());
+        assert!(super::validate_coin_type("0x2::::SUI").is_err());
+        assert!(super::validate_coin_type("SUI").is_err());
     }
 }

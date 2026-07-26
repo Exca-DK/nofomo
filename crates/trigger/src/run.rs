@@ -18,7 +18,7 @@ pub struct TriggerDeps {
     pub levels: Arc<dyn LevelStore>,
     pub orders: Arc<dyn OrderStore>,
     pub venues: Vec<Arc<dyn TradeVenue>>,
-    pub resolver: TokenResolver,
+    pub resolver: Arc<TokenResolver>,
 }
 
 impl TriggerDeps {

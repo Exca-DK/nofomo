@@ -1,3 +1,4 @@
+pub mod deps;
 pub mod keystore;
 pub mod logging;
 pub mod wiring;
@@ -10,13 +11,8 @@ use anyhow::Result;
 use tempo_agentic_config::Config;
 use tempo_agentic_mcp::{AdminHandler, AdminServer, manifest_path};
 use tempo_agentic_orchestrator::Waker;
-use tempo_agentic_price::{
-    DEFAULT_MAX_AGE_SECS, DEFAULT_MAX_MOVE_BPS, FilteredSource, PriceSource,
-};
-use tempo_agentic_price_dexpaprika::DexPaprikaSource;
 use tempo_agentic_storage::{LockFile, SqliteLevelStore, SqliteOrderStore, connect_pool};
 use tempo_agentic_strategy::OrderStore;
-use tempo_agentic_trigger::TokenResolver;
 use tokio::sync::mpsc;
 
 /// Maximum execution-loop sleep between receipt checks.
@@ -64,23 +60,21 @@ pub async fn run(options: Options) -> Result<()> {
     let levels = Arc::new(SqliteLevelStore::new(pool.clone()));
     let orders = Arc::new(SqliteOrderStore::new(pool));
 
+    let tokens = deps::tokens(&config);
+    let source = deps::prices(&config);
     let wiring = wiring::build(
         &config,
         options.allow_broadcast,
         levels.clone(),
         orders.clone(),
+        tokens.clone(),
     )?;
-    let source: Arc<dyn PriceSource> = Arc::new(FilteredSource::new(
-        DexPaprikaSource::new(config.dexpaprika_stream_url.clone()),
-        DEFAULT_MAX_AGE_SECS,
-        DEFAULT_MAX_MOVE_BPS,
-    ));
 
     let admin = AdminServer::start(
         AdminHandler::new(
             levels.clone(),
             orders.clone(),
-            config.evm.clone(),
+            tokens.clone(),
             config.max_slippage_bps,
             options.allow_broadcast,
             source.clone(),
@@ -106,10 +100,7 @@ pub async fn run(options: Options) -> Result<()> {
         ORCHESTRATOR_POLL,
     ));
     let producer = tokio::spawn(tempo_agentic_trigger::produce(
-        levels,
-        TokenResolver::from_config(&config.evm),
-        source,
-        ticks_tx,
+        levels, tokens, source, ticks_tx,
     ));
 
     tokio::select! {

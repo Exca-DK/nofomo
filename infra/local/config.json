@@ -35,6 +35,26 @@
         }
       },
       {
+        "name": "base",
+        "chain_id": 8453,
+        "rpc_url": "https://mainnet.base.org",
+        "graph_subgraph_id": "",
+        "tokens": {
+          "WETH": {
+            "address": "0x4200000000000000000000000000000000000006",
+            "decimals": 18
+          },
+          "USDC": {
+            "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "decimals": 6
+          },
+          "USDT": {
+            "address": "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2",
+            "decimals": 6
+          }
+        }
+      },
+      {
         "name": "unichain",
         "chain_id": 130,
         "rpc_url": "https://mainnet.unichain.org",
@@ -83,6 +103,28 @@
   "sui": {
     "enabled": true,
     "network": "testnet",
-    "rpc_url": "https://fullnode.testnet.sui.io:443"
+    "rpc_url": "https://fullnode.testnet.sui.io:443",
+    "coins": {
+      "hBTC": {
+        "coin_type": "0xfcea10cadbb553c4874201584abf68771592678952efd957b2e82c010c7f4360::btc::BTC",
+        "decimals": 8,
+        "price_ref": {
+          "chain_id": 1,
+          "address": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"
+        }
+      },
+      "SUI": {
+        "coin_type": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI",
+        "decimals": 9
+      },
+      "USDC": {
+        "coin_type": "0x0588cff9a50e0eaf4cd50d337c1a36570bc1517793fd3303e1513e8ad4d2aa96::usdc::USDC",
+        "decimals": 6,
+        "price_ref": {
+          "chain_id": 1,
+          "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+        }
+      }
+    }
   }
 }

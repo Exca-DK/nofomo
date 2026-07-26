@@ -16,7 +16,7 @@ const RECONCILE_SECS: u64 = 30;
 /// Keeps one shared subscription per active price pair.
 pub async fn produce(
     levels: Arc<dyn LevelStore>,
-    resolver: TokenResolver,
+    resolver: Arc<TokenResolver>,
     source: Arc<dyn PriceSource>,
     ticks: mpsc::Sender<PriceTick>,
 ) {

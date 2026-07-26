@@ -7,10 +7,9 @@ use rmcp::model::{ErrorData as McpError, Implementation, ServerCapabilities, Ser
 use rmcp::{Json, ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tempo_agentic_config::EvmConfig;
 use tempo_agentic_price::PriceSource;
 use tempo_agentic_strategy::{Level, LevelStore, Order, OrderStore};
-use tempo_agentic_trigger::{LevelDraft, validate_level};
+use tempo_agentic_trigger::{LevelDraft, TokenResolver, validate_level};
 
 /// Orders returned when the caller does not say how many it wants.
 const DEFAULT_ORDER_LIMIT: usize = 50;
@@ -20,7 +19,7 @@ const DEFAULT_ORDER_LIMIT: usize = 50;
 pub struct AdminHandler {
     levels: Arc<dyn LevelStore>,
     orders: Arc<dyn OrderStore>,
-    evm: EvmConfig,
+    tokens: Arc<TokenResolver>,
     max_slippage_bps: u16,
     allow_broadcast: bool,
     /// Checks price support before storing rules.
@@ -32,7 +31,7 @@ impl AdminHandler {
     pub fn new(
         levels: Arc<dyn LevelStore>,
         orders: Arc<dyn OrderStore>,
-        evm: EvmConfig,
+        tokens: Arc<TokenResolver>,
         max_slippage_bps: u16,
         allow_broadcast: bool,
         prices: Arc<dyn PriceSource>,
@@ -40,7 +39,7 @@ impl AdminHandler {
         Self {
             levels,
             orders,
-            evm,
+            tokens,
             max_slippage_bps,
             allow_broadcast,
             prices,
@@ -223,7 +222,7 @@ impl AdminHandler {
         Parameters(draft): Parameters<LevelDraft>,
     ) -> Result<Json<LevelView>, McpError> {
         let level = validate_level(
-            &self.evm,
+            self.tokens.as_ref(),
             self.max_slippage_bps,
             self.prices.as_ref(),
             &draft,

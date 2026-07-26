@@ -3,10 +3,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use tempo_agentic_config::Config;
-use tempo_agentic_daemon::{Options, keystore, run};
+use tempo_agentic_daemon::{Options, deps, keystore, run};
 use tempo_agentic_domain::{ChainFamily, Signer};
 use tempo_agentic_orchestrator::resolve_quarantine;
-use tempo_agentic_price_dexpaprika::DexPaprikaSource;
 use tempo_agentic_storage::{SqliteLevelStore, SqliteOrderStore, connect_pool};
 use tempo_agentic_strategy::LevelStore;
 use tempo_agentic_trigger::{LevelDraft, validate_level};
@@ -188,9 +187,12 @@ async fn level_command(config: &Config, action: LevelCommand) -> Result<()> {
     let levels = SqliteLevelStore::new(connect_pool(database(config)).await?);
     match action {
         LevelCommand::Add(args) => {
-            let prices = DexPaprikaSource::new(&config.dexpaprika_stream_url);
-            let level =
-                validate_level(&config.evm, config.max_slippage_bps, &prices, &args.into())?;
+            let level = validate_level(
+                deps::tokens(config).as_ref(),
+                config.max_slippage_bps,
+                deps::prices(config).as_ref(),
+                &args.into(),
+            )?;
             levels.upsert_level(&level).await?;
             println!("level {}: stored", level.id);
         }

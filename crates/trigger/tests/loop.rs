@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use alloy_primitives::U256;
 use async_trait::async_trait;
 use serde_json::json;
-use tempo_agentic_config::{EvmChain, EvmConfig, EvmToken};
+use tempo_agentic_config::{EvmChain, EvmConfig, EvmToken, SuiConfig};
 use tempo_agentic_domain::{
     ExecStep, ExecutionPlan, QuoteDraft, QuoteTradeRequest, TradeVenue, TxContext, UnsignedTx,
     VenueName,
@@ -99,7 +99,7 @@ impl Fixture {
                 accepts,
                 calls: calls.clone(),
             })],
-            resolver: resolver(),
+            resolver: std::sync::Arc::new(resolver()),
         };
         (
             Self {
@@ -120,30 +120,33 @@ impl Fixture {
 }
 
 fn resolver() -> TokenResolver {
-    TokenResolver::from_config(&EvmConfig {
-        chains: vec![EvmChain {
-            name: "base".into(),
-            chain_id: BASE_ID,
-            rpc_url: "https://example.invalid".into(),
-            graph_subgraph_id: "subgraph".into(),
-            tokens: HashMap::from([
-                (
-                    "WETH".to_string(),
-                    EvmToken {
-                        address: WETH.into(),
-                        decimals: 18,
-                    },
-                ),
-                (
-                    "USDC".to_string(),
-                    EvmToken {
-                        address: USDC.into(),
-                        decimals: 6,
-                    },
-                ),
-            ]),
-        }],
-    })
+    TokenResolver::from_config(
+        &EvmConfig {
+            chains: vec![EvmChain {
+                name: "base".into(),
+                chain_id: BASE_ID,
+                rpc_url: "https://example.invalid".into(),
+                graph_subgraph_id: "subgraph".into(),
+                tokens: HashMap::from([
+                    (
+                        "WETH".to_string(),
+                        EvmToken {
+                            address: WETH.into(),
+                            decimals: 18,
+                        },
+                    ),
+                    (
+                        "USDC".to_string(),
+                        EvmToken {
+                            address: USDC.into(),
+                            decimals: 6,
+                        },
+                    ),
+                ]),
+            }],
+        },
+        &SuiConfig::default(),
+    )
 }
 
 fn level() -> Level {
