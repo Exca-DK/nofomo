@@ -95,6 +95,30 @@ impl UniswapVenue {
         .await
     }
 
+    async fn api_post(&self, endpoint: &str, body: &Value) -> Result<Value> {
+        let response = self
+            .http
+            .post(format!("{}/{}", self.api_url, endpoint))
+            .header("x-api-key", &self.api_key)
+            // No router version is pinned on purpose. Asking for one the chain has
+            // no deployment of answers "no quotes available" for every pair, which
+            // is indistinguishable from a market with no liquidity.
+            .header("x-permit2-disabled", "true")
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("Uniswap /{endpoint} request failed"))?;
+        let status = response.status();
+        let body: Value = response
+            .json()
+            .await
+            .with_context(|| format!("Uniswap /{endpoint} returned invalid JSON"))?;
+        if !status.is_success() {
+            bail!("Uniswap /{endpoint} returned {status}: {}", compact(&body));
+        }
+        Ok(body)
+    }
+    
     async fn candidate(&self, request: &QuoteTradeRequest, chain: &EvmChain) -> Result<Candidate> {
         let input = find_token(chain, &request.token_in)
             .with_context(|| format!("{} does not configure {}", chain.name, request.token_in))?;
@@ -218,29 +242,7 @@ impl UniswapVenue {
         })
     }
 
-    async fn api_post(&self, endpoint: &str, body: &Value) -> Result<Value> {
-        let response = self
-            .http
-            .post(format!("{}/{}", self.api_url, endpoint))
-            .header("x-api-key", &self.api_key)
-            // No router version is pinned on purpose. Asking for one the chain has
-            // no deployment of answers "no quotes available" for every pair, which
-            // is indistinguishable from a market with no liquidity.
-            .header("x-permit2-disabled", "true")
-            .json(body)
-            .send()
-            .await
-            .with_context(|| format!("Uniswap /{endpoint} request failed"))?;
-        let status = response.status();
-        let body: Value = response
-            .json()
-            .await
-            .with_context(|| format!("Uniswap /{endpoint} returned invalid JSON"))?;
-        if !status.is_success() {
-            bail!("Uniswap /{endpoint} returned {status}: {}", compact(&body));
-        }
-        Ok(body)
-    }
+    
 
     /// Completes a validated API transaction with chain state.
     async fn build_unsigned(
