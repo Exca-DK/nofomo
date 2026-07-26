@@ -30,7 +30,7 @@ A strategy owns its market. Every level refers to one with `--strategy-id`: `buy
 
 `bootstrap` and `run` initialize the current schema only when the state database does not exist. There is no schema migration: if an older development database is rejected, remove the exact path named in the error manually and run `bootstrap` or `run` again. The daemon never deletes it for you.
 
-Direct `strategy add`, `level add`, and `level rm` are offline-only. If `run` holds the database lock, they refuse the write and direct authoring to the daemon's MCP tools; list commands remain available.
+`strategy add`, `level add`, and `level rm` write straight into SQLite when nothing holds it. When `run` holds the database lock they call the daemon's own MCP tools instead, so a trading daemon never has to stop to be reconfigured. The daemon validates whatever it is asked to store, so the checks are the same either way.
 
 `dashboard` requires a running daemon. It reconnects through the daemon manifest after connection or authentication failures and renders feed and level states as text (for example `live`, `stale`, `armed`, or `cooldown`). Press `q` or Ctrl-C to detach; trading continues in the daemon.
 

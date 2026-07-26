@@ -22,6 +22,7 @@ endef
 # GRID_USD. Level ids are derived from the strategy id, so running this again
 # reprices that same grid rather than adding a second one. A level that already
 # fired stays spent.
+# Safe to run against a live daemon; the CLI routes the writes through it.
 # Args: 1 strategy id, 2 chain (also the DexPaprika network), 3 base, 4 quote.
 define grid_strategy
 	$(load_env) ./target/release/tempo-agentic-daemon strategy add \
@@ -85,10 +86,10 @@ run: require-env build bootstrap
 health: require-env build bootstrap
 	$(load_env) ./target/release/tempo-agentic-daemon health
 
-# Development shortcut for the two grids in infra/local/README.md. Writes to the
-# database directly, so it only works while `run` is stopped; a running daemon is
-# authored through its MCP tools instead.
-grid: require-env build bootstrap
+# Development shortcut for the two grids in infra/local/README.md. Works whether
+# or not the daemon is running: the CLI writes to the database when nothing holds
+# it, and calls the daemon's admin tools when something does.
+grid: require-env build
 	$(call grid_strategy,base-eth,base,WETH,USDC)
 	$(call grid_strategy,rh-cashcat,robinhood,CASHCAT,USDG)
 	$(load_env) ./target/release/tempo-agentic-daemon level list

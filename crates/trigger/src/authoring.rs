@@ -1,7 +1,7 @@
 use alloy_primitives::U256;
 use anyhow::{Context, Result, bail};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tempo_agentic_domain::{VenueName, parse_units_string};
 use tempo_agentic_price::PriceSource;
 use tempo_agentic_strategy::{Level, Strategy, StrategyLevel, trade_direction};
@@ -9,7 +9,7 @@ use tempo_agentic_strategy::{Level, Strategy, StrategyLevel, trade_direction};
 use crate::resolver::{RegisteredToken, TokenResolver};
 
 /// Human-readable input for one market.
-#[derive(Clone, Debug, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct StrategyDraft {
     pub id: String,
     pub venue: String,
@@ -19,7 +19,7 @@ pub struct StrategyDraft {
 }
 
 /// Human-readable input for one threshold belonging to a strategy.
-#[derive(Clone, Debug, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct LevelDraft {
     pub id: String,
     pub strategy_id: String,

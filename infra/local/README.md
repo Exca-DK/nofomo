@@ -74,8 +74,8 @@ make grid GRID_RUNGS=3 GRID_STEP_BPS=100 GRID_USD=2 GRID_SLIPPAGE_BPS=50
 ```
 
 It takes the token addresses from the config the daemon itself loads, so a grid
-cannot end up priced off some other token this repo happens to name. Like the
-commands below it writes to the database directly, so `run` has to be stopped.
+cannot end up priced off some other token this repo happens to name. It works
+with the daemon running or stopped.
 
 ## 4. Base — ETH/USDC
 
@@ -137,16 +137,17 @@ MAINNET_SWAP=1 tempo-agentic-daemon run  # spends real funds
 ## Recentring later
 
 Both blocks are keyed by level id, and a write to an existing id replaces it, so
-running a block again reprices the grid around the current market. Two limits:
-the daemon must not be holding the database lock, and a level that already fired
-stays spent — rewriting its trigger does not re-arm it.
+running a block again reprices the grid around the current market. One limit: a
+level that already fired stays spent — rewriting its trigger does not re-arm it.
 
-## Authoring through MCP instead
+## Where the writes actually go
 
-`strategy add`, `level add` and `level rm` write directly to the database and are
-offline-only: while `run` holds the lock they refuse and point here. A running
-daemon is authored through its MCP tools, which is the intended path for an
-agent:
+`strategy add`, `level add` and `level rm` write straight into SQLite when nothing
+holds it. While `run` holds the database they call the daemon's own admin tools
+instead, so the daemon never has to stop to be reconfigured. Either way the same
+validation runs, because the daemon validates what it is asked to store.
+
+An agent talks to those tools directly rather than through the CLI:
 
 | tool | does |
 |---|---|
