@@ -1,9 +1,7 @@
 pub mod admin;
 pub mod lock;
 pub mod logging;
-pub mod operate;
 pub mod prices;
-pub mod provision;
 pub mod wiring;
 
 use std::path::{Path, PathBuf};
@@ -97,7 +95,6 @@ pub async fn run(options: Options) -> Result<()> {
             config.evm.clone(),
             config.max_slippage_bps,
             options.allow_broadcast,
-            source.clone(),
         ),
         &database,
     )

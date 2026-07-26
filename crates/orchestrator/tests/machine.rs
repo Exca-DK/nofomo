@@ -3,8 +3,8 @@ use tempo_agentic_domain::{ExecStep, ExecutionPlan, SignedTx, VenueName};
 use tempo_agentic_strategy::{Level, Order, OrderState, Side};
 
 use tempo_agentic_orchestrator::{
-    Action, Outcome, RECEIPT_DEADLINE_SECS, SWAP_RETRY_CAP, SWAP_RETRY_MAX_BACKOFF_SECS, apply,
-    next_action, swap_retry_backoff_secs,
+    Action, Outcome, SWAP_RETRY_CAP, SWAP_RETRY_MAX_BACKOFF_SECS, apply, next_action,
+    swap_retry_backoff_secs,
 };
 
 const AMOUNT: u64 = 1_000_000;
@@ -48,7 +48,6 @@ fn submitted(step: ExecStep) -> OrderState {
         amount_in: U256::from(AMOUNT),
         tx_hash: "0xabc".into(),
         withdraw_action_id: None,
-        submitted_at: 0,
     }
 }
 
@@ -148,7 +147,6 @@ fn broadcasting_moves_to_submitted_keeping_the_step() {
         &order,
         Outcome::Broadcast {
             tx_hash: "0xdef".into(),
-            at: 1_700_000_042,
         },
     )
     .unwrap()
@@ -160,7 +158,6 @@ fn broadcasting_moves_to_submitted_keeping_the_step() {
             amount_in: U256::from(AMOUNT),
             tx_hash: "0xdef".into(),
             withdraw_action_id: None,
-            submitted_at: 1_700_000_042,
         }
     );
 }
@@ -319,8 +316,7 @@ fn an_outcome_that_cannot_follow_the_state_is_rejected() {
         apply(
             &filled,
             Outcome::Broadcast {
-                tx_hash: "0xdef".into(),
-                at: 1_700_000_042,
+                tx_hash: "0xdef".into()
             }
         )
         .is_err()
@@ -372,54 +368,4 @@ fn blocking_something_that_was_not_being_sent_is_rejected() {
     .unwrap_err();
     assert_eq!(error.state, "SwapReady");
     assert_eq!(error.outcome, "BroadcastBlocked");
-}
-
-// Without this the only exits from `Submitted` are a receipt and a revert, so a
-// nonce taken by somebody else would keep the order — and its level — stuck for
-// good. The hash stays, and the reason admits the transaction is not provably
-// dead, because ending here lets the level fire again.
-#[test]
-fn a_receipt_that_never_arrives_ends_the_order() {
-    let released = apply(&order(submitted(ExecStep::Swap)), Outcome::ReceiptTimedOut)
-        .unwrap()
-        .unwrap();
-    let OrderState::Failed { tx_hash, reason } = &released else {
-        panic!("expected a failed order, got {released:?}");
-    };
-    assert_eq!(tx_hash.as_deref(), Some("0xabc"));
-    assert!(
-        reason.contains("may still land"),
-        "the reason has to warn that this is not proof of death: {reason}"
-    );
-    assert!(
-        reason.contains(&(RECEIPT_DEADLINE_SECS / 60).to_string()),
-        "and say how long we waited: {reason}"
-    );
-}
-
-#[test]
-fn a_timeout_makes_no_sense_before_anything_was_sent() {
-    let error = apply(&order(swap_ready(ExecStep::Swap)), Outcome::ReceiptTimedOut).unwrap_err();
-    assert_eq!(error.state, "SwapReady");
-    assert_eq!(error.outcome, "ReceiptTimedOut");
-}
-
-// The stamp is what the deadline is measured from, so it has to survive the
-// transition rather than be re-derived later.
-#[test]
-fn broadcasting_records_when_the_bytes_went_out() {
-    let order = order(broadcasting());
-    let next = apply(
-        &order,
-        Outcome::Broadcast {
-            tx_hash: "0xdef".into(),
-            at: 1_700_000_042,
-        },
-    )
-    .unwrap()
-    .unwrap();
-    let OrderState::Submitted { submitted_at, .. } = next else {
-        panic!("expected a submitted order");
-    };
-    assert_eq!(submitted_at, 1_700_000_042);
 }

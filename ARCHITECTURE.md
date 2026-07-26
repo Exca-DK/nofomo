@@ -1,10 +1,10 @@
 # Architecture
 
-nofomo is a non-custodial trading daemon. A user-side daemon exposes MCP tools (`status`, `levels`, `orders`, `set_level`, `delete_level`) to an AI agent host. The agent only writes standing price levels; deciding when to act on one, and doing it, belongs to the daemon alone.
+nofomo is a non-custodial trading agent. A user-side daemon exposes MCP tools (`market_research`, `quote_trade`, `execute_trade`) to an AI agent host. It can optionally act on standing price levels via a cloud plane that only moves prices without holding funds or keys.
 
 ## Two planes
 
-The user plane runs as one binary (`tempo-agentic-daemon`) on the user's machine, holds keys and local SQLite state, and makes all trade decisions. The system is non-custodial because execution depends on local key material.
+The user plane runs as one binary (`nofomo`) on the user's machine, holds keys and local SQLite state, and makes all trade decisions. The system is non-custodial because execution depends on local key material.
 
 The cloud plane (`nofomo-relay`, `nofomo-indexer`, `nofomo-trigger`) provides stateless services that broadcast signed transactions, index fills, and stream prices. None of these services hold private keys or decide when to trade.
 
@@ -28,7 +28,7 @@ Venues may read chain state directly through an RPC client. Only the chain clien
 
 ## Execution and order state
 
-One path runs plans to completion: `crates/orchestrator` advances standing levels through a state machine that persists after every transition, so a crash resumes rather than repeats. There is deliberately no second, synchronous path an agent could call — a swap has exactly one way to happen.
+Two paths run plans to completion. The synchronous path (`quote_trade` to `execute_trade`) drives plan steps in one call. The order-driven path in `crates/orchestrator` advances standing levels via a state machine that persists after transitions to handle crashes.
 
 Execution-path code is kept small deliberately. Any growth should be a reviewed architectural decision.
 

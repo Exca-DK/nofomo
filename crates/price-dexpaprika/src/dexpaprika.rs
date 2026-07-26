@@ -35,12 +35,6 @@ struct Feed {
 }
 
 impl PriceSource for DexPaprikaSource {
-    // The same test the stream makes, asked before a rule is stored rather than
-    // after it has been armed and quietly cannot be priced.
-    fn supports(&self, pair: &PricePair) -> bool {
-        chain_slug(pair.chain_id).is_some()
-    }
-
     fn stream(&self, pair: &PricePair) -> PriceStream {
         // DexPaprika names chains itself, so a chain it has no name for cannot
         // be quoted. Retrying would never help, so this is the one case where

@@ -4945,6 +4945,57 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-agentic"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "rmcp",
+ "tempo-agentic-agent",
+ "tempo-agentic-config",
+ "tempo-agentic-mcp",
+ "tempo-agentic-storage",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "tempo-agentic-admin"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde_json",
+ "tempo-agentic-config",
+ "tempo-agentic-orchestrator",
+ "tempo-agentic-storage",
+ "tempo-agentic-strategy",
+ "tempo-agentic-trigger",
+ "tempo-agentic-vault",
+ "tokio",
+]
+
+[[package]]
+name = "tempo-agentic-agent"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde_json",
+ "sha2",
+ "temp-env",
+ "tempo-agentic-cetus",
+ "tempo-agentic-chain",
+ "tempo-agentic-config",
+ "tempo-agentic-domain",
+ "tempo-agentic-graph",
+ "tempo-agentic-storage",
+ "tempo-agentic-uniswap",
+ "tempo-agentic-vault",
+ "tokio",
+]
+
+[[package]]
 name = "tempo-agentic-cetus"
 version = "0.2.0"
 dependencies = [
@@ -4987,7 +5038,6 @@ dependencies = [
 name = "tempo-agentic-daemon"
 version = "0.2.0"
 dependencies = [
- "alloy-primitives",
  "anyhow",
  "clap",
  "futures",
@@ -5047,8 +5097,9 @@ dependencies = [
  "rmcp",
  "schemars 1.2.1",
  "serde",
+ "tempo-agentic-agent",
  "tempo-agentic-config",
- "tempo-agentic-price",
+ "tempo-agentic-domain",
  "tempo-agentic-strategy",
  "tempo-agentic-trigger",
 ]
@@ -5127,7 +5178,6 @@ dependencies = [
  "alloy-primitives",
  "anyhow",
  "async-trait",
- "futures",
  "schemars 1.2.1",
  "serde",
  "serde_json",

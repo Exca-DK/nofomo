@@ -1,7 +1,5 @@
 mod common;
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use alloy_primitives::U256;
 use common::{BASE_ID, Harness, Script, order};
 use tempo_agentic_domain::ExecStep;
@@ -57,7 +55,6 @@ async fn a_submitted_order_resumes_into_a_receipt_check() {
         amount_in: U256::from(AMOUNT),
         tx_hash: HASH.into(),
         withdraw_action_id: None,
-        submitted_at: now_unix(),
     };
     harness.put(&interrupted).await;
 
@@ -100,11 +97,4 @@ async fn a_resumed_order_takes_the_step_the_venue_still_wants() {
     assert_eq!(harness.broadcasts(), 1, "the allowance must not be re-sent");
     assert!(matches!(resumed.state, OrderState::Filled { .. }));
     harness.cleanup();
-}
-
-fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64
 }
