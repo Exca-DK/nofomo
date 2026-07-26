@@ -38,8 +38,7 @@ fn signed_tx_round_trips_through_json() {
 
 #[test]
 fn signed_tx_survives_a_value_round_trip_too() {
-    // `crates/storage` stores state as a `serde_json::Value` column, not a
-    // string, so the `Value` round trip matters as much as the string one.
+    // Storage round-trips the state as a JSON value.
     let original = signed_tx();
     let value = serde_json::to_value(&original).unwrap();
     let decoded: SignedTx = serde_json::from_value(value).unwrap();

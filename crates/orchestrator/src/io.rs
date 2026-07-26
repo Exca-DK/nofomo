@@ -13,9 +13,7 @@ pub struct ExecDeps {
     pub venues: Vec<Arc<dyn TradeVenue>>,
     pub chains: HashMap<u64, Arc<dyn ChainClient>>,
     pub signer: Arc<dyn Signer>,
-    /// Whether signed transactions may actually be sent. Off means every other
-    /// step still runs, so a blocked process exercises the whole path but spends
-    /// nothing.
+    /// Whether signed transactions may be sent.
     pub allow_broadcast: bool,
 }
 
@@ -37,10 +35,7 @@ impl ExecDeps {
     }
 }
 
-/// Runs one action and reports what came of it.
-///
-/// Never returns an error: a failure is an outcome the state machine has to
-/// record, not something the caller could retry differently.
+/// Runs an action and returns every failure as a recordable outcome.
 pub async fn perform(deps: &ExecDeps, order: &Order, action: Action) -> Outcome {
     match action {
         Action::Sign => match sign(deps, order).await {
@@ -75,8 +70,7 @@ async fn sign(deps: &ExecDeps, order: &Order) -> Result<Outcome> {
     let venue = deps.venue(order.venue.as_str())?;
     let chain = deps.chain(&order.plan)?;
 
-    // Asked fresh every time instead of read from the state: once an approval
-    // confirms, the venue stops asking for it, so the sequence repairs itself.
+    // Re-derive remaining steps after each confirmed approval.
     let step = *venue
         .steps(&order.plan)
         .await
@@ -84,16 +78,14 @@ async fn sign(deps: &ExecDeps, order: &Order) -> Result<Outcome> {
         .first()
         .context("venue reports no remaining steps for an unfinished plan")?;
 
-    // The nonce comes from the pending block, so several orders signed in one
-    // sweep pass get consecutive ones rather than all the same.
+    // Pending nonces stay unique within one sweep.
     let ctx = chain.tx_context(deps.signer.address()).await?;
     let unsigned = venue.build(&order.plan, step, &ctx).await?;
     let signed = deps.signer.sign(&unsigned).await?;
     Ok(Outcome::Signed { step, signed })
 }
 
-// An unreadable receipt is not a failed trade. Calling it one would abandon a
-// transaction that may well be on chain, so every error here waits instead.
+// Receipt errors wait because the transaction may be on chain.
 async fn check_receipt(deps: &ExecDeps, order: &Order, tx_hash: &str) -> Outcome {
     let chain = match deps.chain(&order.plan) {
         Ok(chain) => chain,
@@ -121,9 +113,7 @@ async fn check_receipt(deps: &ExecDeps, order: &Order, tx_hash: &str) -> Outcome
     }
 }
 
-// Without a deadline a transaction whose nonce was taken by somebody else keeps
-// its order — and that order's level — stuck for good, because no receipt is
-// ever going to appear.
+// A deadline releases orders whose receipt will never arrive.
 fn past_deadline(order: &Order) -> bool {
     match &order.state {
         OrderState::Submitted { submitted_at, .. } => {
@@ -140,8 +130,7 @@ pub(crate) fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
-// The alternate form keeps the whole `anyhow` context chain, which is the only
-// record of why an order failed once it is in the database.
+// Preserve the full error chain in durable state.
 fn failed(error: anyhow::Error) -> Outcome {
     Outcome::ExecFailed {
         reason: format!("{error:#}"),

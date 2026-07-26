@@ -3,10 +3,7 @@ use tempo_agentic_strategy::{Level, Order, OrderStatus, level_fires};
 
 use crate::resolver::TokenResolver;
 
-/// The levels this tick fires, in the order they were given.
-///
-/// Whether a level has already fired is read from its orders rather than stored
-/// on the level, so the two can never drift apart.
+/// Returns unspent levels fired by this tick, preserving input order.
 pub fn fired_levels<'a>(
     levels: &'a [Level],
     orders: &[Order],
@@ -24,14 +21,7 @@ pub fn fired_levels<'a>(
 /// How long a level rests after an attempt before it may start another.
 const LEVEL_COOLDOWN_SECS: i64 = 60;
 
-/// Whether the level acted too recently to act again.
-///
-/// A failed order leaves the level armed, so without this a rule whose swap keeps
-/// reverting would start a fresh order on every tick — several a minute, each one
-/// costing a quote and often gas.
-///
-/// The status is deliberately not checked: any order that did not fail already
-/// blocks the level through [`is_spent`], so only failed ones reach here.
+/// Applies a cooldown after failed orders.
 pub fn cooling_down(level_id: &str, orders: &[Order], now: i64) -> bool {
     orders
         .iter()
@@ -39,14 +29,7 @@ pub fn cooling_down(level_id: &str, orders: &[Order], now: i64) -> bool {
         .any(|order| now < order.created_at + LEVEL_COOLDOWN_SECS)
 }
 
-/// Whether a level has already been acted on.
-///
-/// Any order that did not fail counts: one in flight must not be raced, and one
-/// that filled means the rule has done its job. Only a failed attempt leaves the
-/// level free, because nothing was committed.
-///
-/// Without this a rule would fire on every tick for as long as its price still
-/// qualifies — several times a minute on a live feed.
+/// Treats any non-failed order as having spent its level.
 pub fn is_spent(level_id: &str, orders: &[Order]) -> bool {
     orders
         .iter()
@@ -54,8 +37,7 @@ pub fn is_spent(level_id: &str, orders: &[Order]) -> bool {
         .any(|order| order.status() != OrderStatus::Failed)
 }
 
-// A level the configuration cannot resolve is skipped rather than matched on
-// looser terms: quoting it against the wrong token would spend real funds.
+// Skip unresolved levels to avoid pricing the wrong token.
 fn prices_this_tick(level: &Level, tick: &PriceTick, resolver: &TokenResolver) -> bool {
     let Some(pair) = resolver.price_pair(level) else {
         tracing::warn!(

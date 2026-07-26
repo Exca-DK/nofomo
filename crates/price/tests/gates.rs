@@ -49,8 +49,7 @@ fn a_slightly_early_tick_is_still_fresh() {
     ));
 }
 
-// Without this, a feed whose clock runs fast would look permanently fresh and
-// the age limit would never fire.
+// A fast feed clock must not bypass the age limit.
 #[test]
 fn a_tick_from_the_future_is_rejected() {
     assert!(is_stale(
@@ -81,8 +80,7 @@ fn a_large_move_is_implausible_in_both_directions() {
     assert!(is_implausible(100.0, 1.0, 500));
 }
 
-// Anything that cannot be compared meaningfully is rejected rather than assumed
-// good: these are the shapes a broken feed produces.
+// Reject values a broken feed can produce.
 #[test]
 fn unusable_values_are_rejected() {
     assert!(is_implausible(0.0, 100.0, 500));

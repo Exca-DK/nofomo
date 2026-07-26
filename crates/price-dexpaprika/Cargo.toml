@@ -8,10 +8,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 futures.workspace = true
-# Declared for its features, not its API: `reqwest-eventsource` asks only for
-# `stream`, and under resolver v2 features unify per build. Building this crate
-# without a sibling that enables TLS would otherwise produce a client that
-# rejects https with "scheme is not http".
+# Enable TLS omitted by reqwest-eventsource's feature set.
 reqwest.workspace = true
 reqwest-eventsource.workspace = true
 serde_json.workspace = true

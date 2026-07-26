@@ -35,8 +35,7 @@ impl GraphClient {
         let mut errors = Vec::new();
 
         for chain in chains {
-            // Chains without an indexed subgraph (e.g. Robinhood Chain) have no
-            // pools to query, so report that rather than hit a malformed URL.
+            // An empty subgraph ID means this chain is not indexed.
             if chain.graph_subgraph_id.trim().is_empty() {
                 errors.push(format!("{} has no configured subgraph", chain.name));
                 continue;

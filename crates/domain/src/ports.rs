@@ -12,10 +12,7 @@ pub trait Signer: Send + Sync {
     /// The address this signer controls, 0x-prefixed.
     fn address(&self) -> &str;
 
-    /// Signs a transaction and reports the hash it will have on chain.
-    ///
-    /// Returns an error if the transaction's fields are malformed. No network
-    /// access happens, so the result can be persisted before broadcasting.
+    /// Signs a valid transaction offline and returns its future hash.
     async fn sign(&self, tx: &UnsignedTx) -> Result<SignedTx>;
 }
 
@@ -37,8 +34,7 @@ pub trait AuditStore: Send + Sync {
         plan_digest: &str,
     ) -> Result<()>;
 
-    /// Atomically consumes a quote and creates an execution attempt.
-    /// The quote is consumed even when confirmation is false or it has expired.
+    /// Consumes a quote and creates an attempt atomically, even if rejected.
     async fn claim_quote(&self, request: &ExecuteTradeRequest, now: u64) -> Result<i64>;
 
     async fn record_execution_success(&self, attempt_id: i64, result: &ExecutionView)

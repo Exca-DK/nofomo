@@ -1,12 +1,14 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use tempo_agentic_config::Config;
-use tempo_agentic_daemon::provision::ImportChain;
-use tempo_agentic_daemon::{Options, operate, provision, run};
+use tempo_agentic_daemon::{Options, provision, run};
+use tempo_agentic_orchestrator::resolve_quarantine;
+use tempo_agentic_price_dexpaprika::DexPaprikaSource;
+use tempo_agentic_storage::{SqliteLevelStore, SqliteOrderStore, connect_pool};
 use tempo_agentic_strategy::LevelStore;
-use tempo_agentic_trigger::LevelDraft;
+use tempo_agentic_trigger::{LevelDraft, validate_level};
 
 #[derive(Parser)]
 #[command(name = "tempo-agentic-daemon", version)]
@@ -50,6 +52,13 @@ enum Command {
         #[arg(long)]
         order_id: String,
     },
+}
+
+/// Which keystore an imported private key belongs in.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ImportChain {
+    Evm,
+    Sui,
 }
 
 #[derive(Subcommand)]
@@ -129,11 +138,22 @@ async fn main() -> Result<()> {
             private_key,
             force,
         } => {
-            let address = provision::import_key(&cli.config, chain, &private_key, force)?;
+            let address = match chain {
+                ImportChain::Evm => provision::import_evm_key(&cli.config, &private_key, force)?,
+                ImportChain::Sui => provision::import_sui_key(&cli.config, &private_key, force)?,
+            };
             println!("{address}");
         }
         Command::Health => {
-            operate::health(&Config::load(&cli.config)?).await?;
+            let config = Config::load(&cli.config)?;
+            if std::env::var_os(&config.uniswap.api_key_env).is_none() {
+                bail!(
+                    "missing required environment variable {}",
+                    config.uniswap.api_key_env
+                );
+            }
+            // Opening runs the migrations, so this also proves they apply.
+            connect_pool(database(&config)).await?;
             println!("config: ok\ndatabase: ok\ntools: ok");
         }
         Command::Level { action } => {
@@ -142,8 +162,8 @@ async fn main() -> Result<()> {
         }
         Command::ResolveQuarantine { order_id } => {
             let config = Config::load(&cli.config)?;
-            let orders = operate::order_store(&config).await?;
-            let level_id = operate::resolve_quarantine(&orders, &order_id).await?;
+            let orders = SqliteOrderStore::new(connect_pool(database(&config)).await?);
+            let level_id = resolve_quarantine(&orders, &order_id).await?;
             println!("order {order_id}: quarantine resolved, level {level_id} released");
         }
     }
@@ -151,10 +171,13 @@ async fn main() -> Result<()> {
 }
 
 async fn level_command(config: &Config, action: LevelCommand) -> Result<()> {
-    let levels = operate::level_store(config).await?;
+    let levels = SqliteLevelStore::new(connect_pool(database(config)).await?);
     match action {
         LevelCommand::Add(args) => {
-            let level = operate::add_level(config, &levels, &args.into()).await?;
+            let prices = DexPaprikaSource::new(&config.dexpaprika_stream_url);
+            let level =
+                validate_level(&config.evm, config.max_slippage_bps, &prices, &args.into())?;
+            levels.upsert_level(&level).await?;
             println!("level {}: stored", level.id);
         }
         LevelCommand::List => {
@@ -179,4 +202,8 @@ async fn level_command(config: &Config, action: LevelCommand) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn database(config: &Config) -> &Path {
+    Path::new(&config.state_db_path)
 }

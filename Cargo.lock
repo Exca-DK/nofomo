@@ -4987,17 +4987,8 @@ dependencies = [
 name = "tempo-agentic-daemon"
 version = "0.2.0"
 dependencies = [
- "alloy-primitives",
  "anyhow",
  "clap",
- "futures",
- "http-body-util",
- "hyper",
- "hyper-util",
- "rand 0.8.7",
- "reqwest 0.12.28",
- "rmcp",
- "serde_json",
  "tempo-agentic-chain",
  "tempo-agentic-config",
  "tempo-agentic-domain",
@@ -5044,13 +5035,23 @@ name = "tempo-agentic-mcp"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "rand 0.8.7",
+ "reqwest 0.12.28",
  "rmcp",
  "schemars 1.2.1",
  "serde",
+ "serde_json",
  "tempo-agentic-config",
  "tempo-agentic-price",
+ "tempo-agentic-price-dexpaprika",
+ "tempo-agentic-storage",
  "tempo-agentic-strategy",
  "tempo-agentic-trigger",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -5064,6 +5065,7 @@ dependencies = [
  "tempo-agentic-domain",
  "tempo-agentic-storage",
  "tempo-agentic-strategy",
+ "tempo-agentic-trigger",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
@@ -5106,6 +5108,7 @@ dependencies = [
  "tempo-agentic-domain",
  "tempo-agentic-strategy",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

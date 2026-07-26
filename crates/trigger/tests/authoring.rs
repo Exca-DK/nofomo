@@ -7,8 +7,7 @@ use tempo_agentic_price::{PricePair, PriceSource, PriceStream};
 use tempo_agentic_strategy::Side;
 use tempo_agentic_trigger::{LevelDraft, validate_level};
 
-/// Quotes the chains it was given and nothing else, like a real provider that
-/// names chains itself.
+/// Supports only its configured chains.
 struct Prices {
     chains: Vec<u64>,
 }
@@ -93,9 +92,7 @@ fn a_sound_draft_becomes_a_rule() {
     assert_eq!(level.slippage_bps, 50);
 }
 
-// The amount is written the way a person says it and stored the way a chain
-// wants it. Getting the scale wrong here would spend a millionth of the intended
-// sum, or a million times it.
+// Convert human units to exact chain units.
 #[test]
 fn the_amount_is_scaled_by_the_input_token() {
     let level = accept(draft());
@@ -114,8 +111,7 @@ fn the_amount_is_scaled_by_the_input_token() {
     assert_eq!(level.amount_decimals, 18);
 }
 
-// The stored spelling comes from the configuration, because that is what the
-// resolver looks the chain up by when a tick arrives.
+// Store the resolver's configured spelling.
 #[test]
 fn the_chain_is_stored_as_the_configuration_spells_it() {
     let level = accept(LevelDraft {
@@ -130,8 +126,7 @@ fn the_chain_is_stored_as_the_configuration_spells_it() {
     assert_eq!(level.token_out, "WETH");
 }
 
-// Nothing could ever price these, so they would sit in the database looking
-// armed and never fire.
+// Reject unpriceable rules.
 #[test]
 fn a_rule_nothing_can_price_is_refused() {
     assert!(
@@ -157,8 +152,7 @@ fn a_rule_nothing_can_price_is_refused() {
     );
 }
 
-// The venue would refuse this on every single tick, so the rule would burn a
-// quote a minute and never trade.
+// Reject rules the venue cannot execute.
 #[test]
 fn slippage_above_the_ceiling_is_refused() {
     let error = reject(LevelDraft {
@@ -204,9 +198,7 @@ fn an_unreadable_side_venue_or_amount_is_refused() {
     );
 }
 
-// The configuration can name a chain no price provider quotes. Such a rule used
-// to store happily, subscribe once, log a single warning and stay armed and dead
-// for good.
+// Reject configured chains unsupported by the price source.
 #[test]
 fn a_chain_no_source_quotes_is_refused() {
     let quoting_nothing = Prices { chains: Vec::new() };
@@ -217,8 +209,7 @@ fn a_chain_no_source_quotes_is_refused() {
     assert!(error.contains("WETH"), "say which token: {error}");
 }
 
-// A buy watches token_out, a sell watches token_in, so the two sides can hinge
-// on different tokens — the check has to follow whichever one is priced.
+// Support checks follow the side's priced token.
 #[test]
 fn the_side_decides_which_token_has_to_be_quotable() {
     assert!(validate_level(&evm(), MAX_SLIPPAGE_BPS, &prices(), &draft()).is_ok());

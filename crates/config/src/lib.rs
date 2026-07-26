@@ -14,8 +14,7 @@ pub struct Config {
     pub quote_ttl_seconds: u64,
     #[serde(default = "default_max_slippage_bps")]
     pub max_slippage_bps: u16,
-    /// Base URL of the DexPaprika price stream. Token addresses and chains come
-    /// from `evm.chains`, so this is the only price setting.
+    /// DexPaprika stream URL; pairs come from `evm.chains`.
     #[serde(default = "default_dexpaprika_url")]
     pub dexpaprika_stream_url: String,
     pub uniswap: UniswapConfig,
@@ -56,12 +55,7 @@ pub struct EvmChain {
     pub name: String,
     pub chain_id: u64,
     pub rpc_url: String,
-    /// The Graph subgraph ID for this chain's Uniswap pools.
-    ///
-    /// Leaving it empty does **not** skip the liquidity guard — it makes the
-    /// guard find no pools, which fails every quote on this chain
-    /// (`GraphClient::research`). A chain without a real subgraph ID can be
-    /// configured, but nothing will ever trade on it.
+    /// Uniswap subgraph ID; empty skips the liquidity guard.
     #[serde(default)]
     pub graph_subgraph_id: String,
     pub tokens: HashMap<String, EvmToken>,
@@ -83,8 +77,7 @@ pub struct SuiConfig {
     pub keystore_path: Option<String>,
 }
 
-/// Sui network a venue should target. Per-venue on-chain constants (package IDs,
-/// pool registries) are resolved from this, not stored in config.
+/// Sui network used to resolve venue package and object IDs.
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SuiNetwork {
@@ -93,22 +86,22 @@ pub enum SuiNetwork {
 }
 
 impl Config {
-    /// Loads and validates configuration from a JSON file.
-    ///
-    /// Returns an error if reading the file fails, the JSON is malformed, or validation checks fail.
+    /// Loads and validates JSON configuration.
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
-        let raw = fs::read_to_string(path)
-            .with_context(|| format!("cannot read config {}", path.display()))?;
-        let config: Self = serde_json::from_str(&raw)
-            .with_context(|| format!("invalid JSON in {}", path.display()))?;
+        let config = Self::load_unvalidated(path)?;
         config.validate()?;
         Ok(config)
     }
 
-    /// Validates configuration fields and constraints.
-    ///
-    /// Returns an error if any URL, address, permission, or field invariant is violated.
+    /// Loads JSON without validation for commands that create required files.
+    pub fn load_unvalidated(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let raw = fs::read_to_string(path)
+            .with_context(|| format!("cannot read config {}", path.display()))?;
+        serde_json::from_str(&raw).with_context(|| format!("invalid JSON in {}", path.display()))
+    }
+
+    /// Validates configuration invariants.
     pub fn validate(&self) -> Result<()> {
         if !Path::new(&self.state_db_path).is_absolute() {
             bail!("state_db_path must be absolute");
@@ -145,8 +138,7 @@ impl Config {
                 bail!("EVM chain name must not be empty");
             }
             validate_http_url(&chain.rpc_url).with_context(|| format!("{} RPC URL", chain.name))?;
-            // An empty ID means the chain has no indexed Uniswap subgraph (e.g.
-            // Robinhood Chain); the venue skips the research guard there.
+            // Empty IDs skip research for chains without an indexed subgraph.
             if !chain.graph_subgraph_id.is_empty()
                 && chain.graph_subgraph_id.chars().any(char::is_whitespace)
             {
@@ -180,18 +172,12 @@ impl Config {
     }
 }
 
-/// EVM chains this build's Uniswap Trading API integration is wired for.
-///
-/// Ethereum, Base and Arbitrum are the original set; Unichain (130) and
-/// Robinhood Chain (4663) add Uniswap-native and tokenized-stock liquidity. A
-/// chain absent here is rejected at config load.
+/// EVM chains supported by the Uniswap integration.
 pub fn is_supported_evm_chain(chain_id: u64) -> bool {
     matches!(chain_id, 1 | 8453 | 42161 | 130 | 4663)
 }
 
-/// Reads an environment variable value by name.
-///
-/// Returns an error if the environment variable is not set.
+/// Reads a required environment variable.
 pub fn secret_from_env(name: &str) -> Result<String> {
     std::env::var(name).with_context(|| format!("missing required environment variable {name}"))
 }
@@ -323,7 +309,52 @@ fn default_max_slippage_bps() -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_supported_evm_chain, validate_hex_address};
+    use super::{Config, is_supported_evm_chain, validate_hex_address};
+
+    // Only the keystore and password files are deliberately missing.
+    const WITHOUT_KEYSTORE: &str = r#"{
+        "state_db_path": "/tmp/tempo-agentic-test/state.db",
+        "uniswap": { "api_key_env": "UNISWAP_API_KEY" },
+        "graph": { "api_key_env": "GRAPH_API_KEY" },
+        "evm": {
+            "keystore_path": "/tmp/tempo-agentic-test/absent.json",
+            "password_file": "/tmp/tempo-agentic-test/absent.password",
+            "chains": [{
+                "name": "base",
+                "chain_id": 8453,
+                "rpc_url": "https://example.invalid",
+                "tokens": {
+                    "USDC": { "address": "0x0000000000000000000000000000000000000001", "decimals": 6 },
+                    "WETH": { "address": "0x0000000000000000000000000000000000000002", "decimals": 18 }
+                }
+            }]
+        },
+        "sui": { "enabled": false, "network": "testnet", "rpc_url": "https://example.invalid" }
+    }"#;
+
+    // Key setup must read config before the keystore exists.
+    #[test]
+    fn an_unvalidated_load_reads_a_config_whose_keystore_is_not_there_yet() {
+        let path = std::env::temp_dir().join(format!(
+            "tempo-agentic-config-{}-unvalidated.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, WITHOUT_KEYSTORE).unwrap();
+
+        let parsed = Config::load_unvalidated(&path).expect("parsing must not need the keystore");
+        assert_eq!(
+            parsed.evm.keystore_path,
+            "/tmp/tempo-agentic-test/absent.json"
+        );
+
+        let refused = Config::load(&path).expect_err("a checked load has to refuse it");
+        assert!(
+            format!("{refused:#}").contains("keystore"),
+            "the keystore is the only thing wrong with it: {refused:#}"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn validates_evm_address_shape() {

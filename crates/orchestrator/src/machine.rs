@@ -5,8 +5,7 @@ use thiserror::Error;
 /// The single thing an order needs done next.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
-    /// Build and sign the next transaction. Which step that is comes from the
-    /// venue, not from here.
+    /// Build and sign the venue's next transaction.
     Sign,
     Broadcast {
         signed: SignedTx,
@@ -26,8 +25,7 @@ pub enum Outcome {
     },
     Broadcast {
         tx_hash: String,
-        /// Unix second the bytes went out, kept so the wait for a receipt can be
-        /// given a deadline.
+        /// Broadcast time used for the receipt deadline.
         at: i64,
     },
     Confirmed,
@@ -37,8 +35,7 @@ pub enum Outcome {
     ExecFailed {
         reason: String,
     },
-    /// An operator released a quarantined order by hand. The only outcome no
-    /// execution ever produces.
+    /// An operator manually released a quarantined order.
     QuarantineResolved,
     /// The transaction was ready but sending it is not allowed.
     BroadcastBlocked,
@@ -46,15 +43,10 @@ pub enum Outcome {
     ReceiptTimedOut,
 }
 
-/// How long a broadcast transaction is given to produce a receipt.
-///
-/// Generous on purpose. Giving up frees the level to fire again, so a
-/// transaction that landed late would become a second fill; the wait has to be
-/// long enough that a live transaction has almost certainly been dropped first.
+/// Receipt deadline, kept long to avoid a duplicate late fill.
 pub const RECEIPT_DEADLINE_SECS: i64 = 1_800;
 
-/// Broadcast attempts an order may burn before it is parked. The count is raised
-/// after this decision, so the cap lands on the following attempt.
+/// Broadcast attempts allowed before parking an order.
 pub const SWAP_RETRY_CAP: u32 = 8;
 
 /// Longest a retry is ever put off.
@@ -62,10 +54,7 @@ pub const SWAP_RETRY_MAX_BACKOFF_SECS: i64 = 600;
 
 const SWAP_RETRY_INITIAL_BACKOFF_SECS: i64 = 2;
 
-/// How long to wait before the given attempt.
-///
-/// Doubles per attempt up to [`SWAP_RETRY_MAX_BACKOFF_SECS`], so a node that
-/// stays down is asked less and less often instead of on every sweep.
+/// Exponential retry delay capped by [`SWAP_RETRY_MAX_BACKOFF_SECS`].
 pub fn swap_retry_backoff_secs(attempts: u32) -> i64 {
     let shift = attempts.saturating_sub(1).min(20);
     SWAP_RETRY_INITIAL_BACKOFF_SECS
@@ -99,17 +88,12 @@ pub fn next_action(order: &Order) -> Action {
         OrderState::Filled { .. }
         | OrderState::Failed { .. }
         | OrderState::SwapQuarantined { .. } => Action::Done,
-        // The lending states exist ahead of the lending work and nothing creates
-        // them yet, so there is nothing to do. A sweep passes over such a row
-        // without touching the network.
+        // Lending states are not executable yet.
         OrderState::Withdrawing { .. } | OrderState::Depositing { .. } => Action::Done,
     }
 }
 
-/// The state an outcome moves an order into, or `None` when it stays put.
-///
-/// Returns an error when the outcome cannot follow the state at all, which means
-/// the row or the caller is wrong rather than the trade.
+/// Applies an outcome, rejecting impossible state transitions.
 pub fn apply(order: &Order, outcome: Outcome) -> Result<Option<OrderState>, TransitionError> {
     use OrderState as S;
     use Outcome as O;
@@ -151,10 +135,7 @@ pub fn apply(order: &Order, outcome: Outcome) -> Result<Option<OrderState>, Tran
             withdraw_action_id: withdraw_action_id.clone(),
             submitted_at: at,
         },
-        // A refused send says nothing about the transaction: the bytes may sit in
-        // a mempool already. Retrying resends exactly the same bytes, which only
-        // works because a node reports an already-known transaction as accepted.
-        // Staying put is what makes that happen; the caller schedules the retry.
+        // Keep signed bytes after an uncertain send so retries are identical.
         (
             S::Broadcasting {
                 amount_in, tx_hash, ..
@@ -171,9 +152,7 @@ pub fn apply(order: &Order, outcome: Outcome) -> Result<Option<OrderState>, Tran
             }
         }
 
-        // The swap is always the plan's last step, so confirming it finishes the
-        // order. Confirming an allowance step only clears the way for the next
-        // one, which the venue names when the signing comes round again.
+        // A confirmed swap finishes; allowances return to step discovery.
         (
             S::Submitted {
                 step: ExecStep::Swap,
@@ -200,10 +179,7 @@ pub fn apply(order: &Order, outcome: Outcome) -> Result<Option<OrderState>, Tran
             tx_hash: Some(tx_hash.clone()),
             reason: "reverted on-chain".to_string(),
         },
-        // The only way out of `Submitted` when a nonce was taken by somebody
-        // else: no receipt will ever come. The hash is kept and the reason says
-        // outright that the transaction is not provably dead, because ending
-        // here frees the level and a late fill would be a second one.
+        // Keep the hash because a timed-out transaction may still land.
         (S::Submitted { tx_hash, .. }, O::ReceiptTimedOut) => S::Failed {
             tx_hash: Some(tx_hash.clone()),
             reason: format!(
@@ -212,16 +188,13 @@ pub fn apply(order: &Order, outcome: Outcome) -> Result<Option<OrderState>, Tran
             ),
         },
 
-        // Nothing left the process, so there is no hash and nothing to retry:
-        // resending would be blocked just the same. Ending here frees the level,
-        // which then rests and tries the whole path again a minute later.
+        // A blocked send leaves nothing to retry and frees the level.
         (S::Broadcasting { .. }, O::BroadcastBlocked) => S::Failed {
             tx_hash: None,
             reason: "broadcast blocked; set MAINNET_SWAP=1 to allow".to_string(),
         },
 
-        // The one transition a person makes by hand. `Failed` is the landing
-        // because it is the only status that leaves the level free to fire again.
+        // Manual release uses `Failed` to free the level.
         (S::SwapQuarantined { tx_hash, .. }, O::QuarantineResolved) => S::Failed {
             tx_hash: tx_hash.clone(),
             reason: "quarantine resolved by operator".to_string(),

@@ -47,8 +47,7 @@ impl ChainVault for EvmVault {
 }
 
 impl EvmVault {
-    /// Imports an existing private key into the keystore instead of generating a throwaway key.
-    /// Returns an error if the keystore already exists and force is not set, or if key encryption fails.
+    /// Imports a private key, optionally replacing its keystore.
     pub fn import_key(&self, private_key: &str, force: bool) -> Result<String> {
         if self.keystore_path.exists() && !force {
             bail!(
@@ -112,8 +111,7 @@ impl ChainVault for SuiVault {
 }
 
 impl SuiVault {
-    /// Imports an existing base64 keypair into the keystore instead of generating a throwaway key.
-    /// Returns an error if the keystore already exists and force is not set, or if key decoding fails.
+    /// Imports a base64 keypair, optionally replacing its keystore.
     pub fn import_key(&self, key: &str, force: bool) -> Result<String> {
         if self.keystore_path.exists() && !force {
             bail!(

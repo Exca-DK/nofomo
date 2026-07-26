@@ -73,8 +73,7 @@ async fn venue(mock_uri: &str, key_env: &str) -> UniswapVenue {
             name: "base".to_string(),
             chain_id: CHAIN_ID,
             rpc_url: "http://unused.invalid".to_string(),
-            // Left empty so the graph research guard is skipped and the mock
-            // server never has to serve a /research query.
+            // Empty skips graph research in this API-only test.
             graph_subgraph_id: String::new(),
             tokens,
         }],
@@ -86,8 +85,7 @@ async fn venue(mock_uri: &str, key_env: &str) -> UniswapVenue {
     };
     let mut chains: HashMap<u64, Arc<dyn ChainClient>> = HashMap::new();
     chains.insert(CHAIN_ID, Arc::new(FakeChainClient));
-    // Both constructors read `key_env` synchronously, so the var only needs
-    // to exist for the duration of this closure.
+    // Constructors read `key_env` synchronously.
     temp_env::with_var(key_env, Some("test-key"), || {
         UniswapVenue::new(
             &uniswap_config,
@@ -112,8 +110,7 @@ fn request() -> QuoteTradeRequest {
     }
 }
 
-// A quote response that passes every validation, so each test can flip one
-// field and know that field is the only reason it now fails.
+// A valid baseline quote for single-field failure tests.
 fn valid_quote_response() -> Value {
     json!({
         "routing": "CLASSIC",
@@ -209,8 +206,7 @@ async fn rejects_malformed_output_amount() {
 async fn rejects_minimum_output_below_the_requested_slippage_floor() {
     let server = MockServer::start().await;
     let mut response = valid_quote_response();
-    // 50 bps of slippage on 990000000000000000 floors at 985050000000000000;
-    // this is below that floor.
+    // Below the 50 bps floor of 985050000000000000.
     response["quote"]["output"]["minimumAmount"] = json!("100000000000000000");
     mount_quote(&server, response).await;
     let venue = venue(&server.uri(), "UNISWAP_TEST_KEY_SLIPPAGE").await;
@@ -223,9 +219,7 @@ async fn rejects_minimum_output_below_the_requested_slippage_floor() {
     );
 }
 
-// The approval step is where the API-controlled spender is checked: build()
-// refuses to sign an approval that grants allowance to anything but the
-// venue's known proxy address.
+// Approval building rejects an API-controlled unknown spender.
 #[tokio::test]
 async fn rejects_approval_calldata_to_an_unexpected_spender() {
     let server = MockServer::start().await;

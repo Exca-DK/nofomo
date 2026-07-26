@@ -14,18 +14,14 @@ use tempo_agentic_domain::{
 };
 use tempo_agentic_graph::GraphClient;
 
-/// EVM swap venue that quotes and builds transactions via the Uniswap API.
-///
-/// It never signs or broadcasts: node access goes through [`ChainClient`] and
-/// signing through [`tempo_agentic_domain::Signer`].
+/// Uniswap API venue that quotes and builds but never signs or broadcasts.
 #[derive(Clone)]
 pub struct UniswapVenue {
     http: Client,
     api_url: String,
     api_key: String,
     evm: EvmConfig,
-    /// Taker address for quotes and approvals. Supplied by the caller from the
-    /// signer, so the venue never has to touch key material to learn it.
+    /// Signer's public address used for quotes and approvals.
     wallet_address: String,
     chains: HashMap<u64, Arc<dyn ChainClient>>,
     graph: GraphClient,
@@ -67,8 +63,7 @@ impl UniswapVenue {
             .with_context(|| format!("no chain client configured for chain {chain_id}"))
     }
 
-    /// Fetches the `check_approval` response, which carries the optional cancel
-    /// and approval transactions for an ERC-20 input.
+    /// Fetches optional allowance reset and approval transactions.
     async fn check_approval(
         &self,
         chain_id: u64,
@@ -107,9 +102,7 @@ impl UniswapVenue {
             );
         }
 
-        // Chains without an indexed Uniswap subgraph (e.g. Robinhood Chain)
-        // can't be checked against The Graph, so the guard is skipped there and
-        // the Uniswap quote validation below is the only safety check.
+        // Skip liquidity research on chains without an indexed subgraph.
         let graph_guard = if chain.graph_subgraph_id.trim().is_empty() {
             format!(
                 "graph guard skipped: no subgraph configured for {}",
@@ -234,11 +227,7 @@ impl UniswapVenue {
         Ok(body)
     }
 
-    /// Turns a validated Uniswap API transaction into a signable one.
-    ///
-    /// The API supplies the target, calldata and value; nonce and fees come from
-    /// `ctx`. The gas limit is taken from the API when present and estimated
-    /// against the node otherwise.
+    /// Completes a validated API transaction with chain state.
     async fn build_unsigned(
         &self,
         transaction: &Value,
@@ -376,8 +365,7 @@ impl TradeVenue for UniswapVenue {
         }
 
         match step {
-            // Re-fetched rather than carried over from `steps` so a resumed
-            // execution can rebuild this transaction from the plan alone.
+            // Re-fetch so a stored plan can resume without prior step state.
             ExecStep::Cancel | ExecStep::Approval => {
                 let approval = self
                     .check_approval(*chain_id, input_token, input_amount)
@@ -432,8 +420,7 @@ fn chain_requested(chain: &EvmChain, requested: &[String]) -> bool {
         })
 }
 
-/// Maps a `check_approval` response onto the steps it implies. The swap always
-/// runs last; the allowance transactions only appear when Uniswap asks for them.
+/// Maps approval requirements to ordered steps ending in the swap.
 fn steps_from_check_approval(approval: &Value) -> Vec<ExecStep> {
     let mut steps = Vec::new();
     for (field, step) in [
@@ -448,8 +435,7 @@ fn steps_from_check_approval(approval: &Value) -> Vec<ExecStep> {
     steps
 }
 
-/// Reads the transaction's native value as a decimal string, accepting the
-/// decimal or hex forms the API may use.
+/// Reads an API transaction value from decimal or hex.
 fn decimal_value(transaction: &Value) -> Result<String> {
     let raw = transaction
         .get("value")

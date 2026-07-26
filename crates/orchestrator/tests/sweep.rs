@@ -9,9 +9,7 @@ use tempo_agentic_strategy::OrderState;
 #[tokio::test]
 async fn one_failing_order_does_not_stop_the_others() {
     let harness = Harness::new("sweep", Script::default()).await;
-    // Chain 1 has no client configured, so this one cannot even be signed. The
-    // id sorts ahead of `o-1`, which is the order `list_orders` walks in, so the
-    // sweep meets the broken order first and has to carry on past it.
+    // The first sorted order has no chain client; the sweep must continue.
     harness.put(&order("o-0-stranded", 1)).await;
 
     harness.sweep().await;
@@ -37,8 +35,7 @@ async fn a_finished_order_is_never_touched_again() {
     harness.cleanup();
 }
 
-// The producer wakes the loop the moment it stores an order, which can easily be
-// before the loop comes back round to wait.
+// A wake sent before waiting must remain cached.
 #[tokio::test]
 async fn waking_before_waiting_is_not_lost() {
     let waker = Waker::default();

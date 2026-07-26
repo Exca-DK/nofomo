@@ -8,8 +8,7 @@ fn pair() -> PricePair {
     PricePair::new(BASE_CHAIN_ID, WETH_BASE)
 }
 
-// A payload captured from the live feed. Note the price arrives as a string, not
-// a number: parsing it as a number only would drop every real quote.
+// Live payloads may encode the price as a string.
 #[test]
 fn the_real_feed_payload_parses() {
     let payload = r#"{"address":"0x4200000000000000000000000000000000000006","chain":"base","price":"1591.6871308001703","timestamp":1782914872}"#;
@@ -45,8 +44,7 @@ fn a_wrapped_payload_parses() {
     assert_eq!(tick.published_at, 7);
 }
 
-// An EIP-55 checksummed address and its lowercase form name the same token, so
-// the feed's casing must not decide whether a quote is usable.
+// EIP-55 address matching is case-insensitive.
 #[test]
 fn address_casing_does_not_matter() {
     let checksummed = "0x4200000000000000000000000000000000000006";
@@ -56,8 +54,7 @@ fn address_casing_does_not_matter() {
     assert!(parse_tick(&lowercase, &payload).is_some());
 }
 
-// A crossed subscription must not be priced. Without this the daemon would spend
-// funds against whatever token the feed happened to send.
+// Reject quotes from a crossed subscription.
 #[test]
 fn a_frame_about_another_token_is_rejected() {
     let usdc = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
@@ -77,8 +74,7 @@ fn a_frame_that_names_no_token_is_rejected() {
     assert_eq!(parse_tick(&pair(), r#"{"price":1.0,"timestamp":1}"#), None);
 }
 
-// Without a timestamp the staleness gate has nothing to check, and defaulting to
-// "now" would disable it silently.
+// Reject missing timestamps instead of bypassing staleness checks.
 #[test]
 fn a_frame_without_a_timestamp_is_rejected() {
     let payload = format!(r#"{{"address":"{WETH_BASE}","chain":"base","price":1.0}}"#);
@@ -105,8 +101,7 @@ fn heartbeats_and_malformed_frames_are_skipped_not_fatal() {
     assert_eq!(parse_tick(&pair(), r#"{"event":"ping"}"#), None);
 }
 
-// These are exactly the chains Config::validate accepts; the two lists have to
-// move together or a level ends up with nothing pricing it.
+// Keep provider chains aligned with config validation.
 #[test]
 fn every_supported_chain_has_a_slug() {
     assert_eq!(chain_slug(1), Some("ethereum"));
@@ -120,8 +115,7 @@ fn an_unsupported_chain_has_no_fallback_slug() {
     assert_eq!(chain_slug(0), None);
 }
 
-// The pair is chain-agnostic, so it can name a chain this provider cannot quote.
-// That must not be read as a quote for some other chain.
+// Unsupported chains must not fall back to another chain.
 #[test]
 fn a_frame_for_a_chain_this_provider_cannot_quote_is_rejected() {
     let polygon = PricePair::new(137, WETH_BASE);

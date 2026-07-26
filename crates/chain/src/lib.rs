@@ -16,10 +16,7 @@ sol! {
     }
 }
 
-/// EVM node client for a single chain.
-///
-/// The provider is built without a wallet, so this type can never sign; signing
-/// belongs to the [`tempo_agentic_domain::Signer`] port.
+/// Wallet-free EVM node client for one chain.
 #[derive(Clone)]
 pub struct EvmChainClient {
     provider: DynProvider,
@@ -55,20 +52,10 @@ impl EvmChainClient {
     }
 }
 
-/// Whether the node is saying "this transaction is already accounted for".
+/// Recognizes node messages that make an identical rebroadcast safe.
 ///
-/// Treating these as success is what makes a re-broadcast after a crash safe:
-/// the bytes are identical, so the same nonce can only ever land once. Nodes
-/// disagree on the wording, hence the list.
-///
-/// `nonce too low` is included on purpose even though it is ambiguous — it can
-/// mean our transaction was mined, or that somebody else took the nonce. The
-/// first case resolves when the receipt turns up; the second never produces one
-/// and is caught by the receipt deadline instead.
-///
-/// `replacement transaction underpriced` is deliberately **not** here. It means
-/// a *different* transaction holds that nonce and ours will never land, so
-/// calling it success would park the order on a hash that is in no mempool.
+/// Includes ambiguous `nonce too low`; excludes replacement-underpriced because
+/// it means different bytes own the nonce.
 pub fn is_duplicate_submission(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     ["already known", "already imported", "nonce too low"]
@@ -85,10 +72,7 @@ impl ChainClient for EvmChainClient {
     async fn tx_context(&self, from: &str) -> Result<TxContext> {
         let from =
             Address::from_str(from).with_context(|| format!("invalid from address {from}"))?;
-        // Counted against the pending block, not the latest one. A sweep drives
-        // several orders in a row and each returns as soon as it has broadcast,
-        // so with `latest` every order in one pass would read the same nonce and
-        // all but one would be thrown away by the node.
+        // Pending nonces stay unique across one sweep's broadcasts.
         let nonce = self
             .provider
             .get_transaction_count(from)
@@ -163,8 +147,7 @@ impl ChainClient for EvmChainClient {
     async fn broadcast(&self, signed: &SignedTx) -> Result<String> {
         let bytes = Bytes::from_str(&signed.raw).context("signed transaction is not valid hex")?;
         match self.provider.send_raw_transaction(&bytes).await {
-            // The hash comes from the signed bytes, not the node, so it is known
-            // even when the node reports the transaction as already seen.
+            // The signed bytes provide the hash even when the node already saw them.
             Ok(_pending) => Ok(signed.hash.clone()),
             Err(error) => {
                 let message = error.to_string();

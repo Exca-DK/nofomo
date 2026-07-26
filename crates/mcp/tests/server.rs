@@ -2,8 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use tempo_agentic_config::EvmConfig;
-use tempo_agentic_daemon::admin::{AdminServer, manifest_path};
-use tempo_agentic_mcp::AdminHandler;
+use tempo_agentic_mcp::{AdminHandler, AdminServer, manifest_path};
 use tempo_agentic_price_dexpaprika::DexPaprikaSource;
 use tempo_agentic_storage::{SqliteLevelStore, SqliteOrderStore, connect_pool};
 
@@ -14,12 +13,10 @@ struct Fixture {
 }
 
 impl Fixture {
-    // Named after the test rather than stamped with a clock: these run in
-    // parallel in one process, and `SystemTime::now` is coarse enough that they
-    // would otherwise share a database and delete it from under each other.
+    // Test names stay unique under parallel execution.
     async fn start(name: &str) -> Self {
         let database = std::env::temp_dir().join(format!(
-            "tempo-agentic-daemon-admin-{}-{name}.db",
+            "tempo-agentic-mcp-server-{}-{name}.db",
             std::process::id(),
         ));
         let pool = connect_pool(&database).await.unwrap();
@@ -74,8 +71,7 @@ impl Fixture {
     }
 }
 
-// Loopback keeps other machines out; it does nothing about other processes on
-// this one, and `set_level` stores rules that spend funds.
+// Loopback still requires authentication between local processes.
 #[tokio::test]
 async fn a_request_without_the_token_is_refused() {
     let fixture = Fixture::start("token").await;
@@ -100,8 +96,7 @@ async fn a_request_without_the_token_is_refused() {
     fixture.cleanup();
 }
 
-// A manifest left behind would point at a port nobody is listening on, and hand
-// out a token that no longer opens anything.
+// Dropping the server must remove its stale manifest.
 #[tokio::test]
 async fn stopping_the_server_takes_the_manifest_with_it() {
     let fixture = Fixture::start("manifest").await;

@@ -109,8 +109,7 @@ fn every_state_asks_for_its_own_action() {
     }
 }
 
-// The step the venue actually signed is what gets recorded, not the hint the
-// order was carrying.
+// Record the step actually signed.
 #[test]
 fn signing_records_the_step_the_venue_chose() {
     let order = order(swap_ready(ExecStep::Swap));
@@ -176,8 +175,7 @@ fn a_confirmed_swap_fills_the_order() {
     );
 }
 
-// An allowance is not the trade: confirming one only returns the order to
-// signing, where the venue names whatever is left.
+// A confirmed allowance returns to step discovery.
 #[test]
 fn a_confirmed_allowance_goes_back_to_signing() {
     for step in [ExecStep::Cancel, ExecStep::Approval] {
@@ -201,8 +199,7 @@ fn a_revert_fails_the_order_and_keeps_the_hash() {
     );
 }
 
-// Nothing was signed yet, so nothing is at stake and no hash exists to record.
-// Ending here is what lets the level fire again with a fresh quote.
+// A pre-signing failure frees the level without a hash.
 #[test]
 fn a_failure_before_signing_ends_the_order_without_a_hash() {
     let before = order(swap_ready(ExecStep::Swap));
@@ -222,8 +219,7 @@ fn a_failure_before_signing_ends_the_order_without_a_hash() {
     );
 }
 
-// Holding the state is the whole mechanism: `next_action` reads `Broadcasting`
-// again and hands back the very same bytes.
+// Unchanged `Broadcasting` state retries identical bytes.
 #[test]
 fn a_refused_send_holds_the_state_so_the_same_bytes_go_again() {
     let mut order = order(broadcasting());
@@ -340,16 +336,13 @@ fn the_backoff_doubles_and_then_holds() {
     );
 }
 
-// The count is raised before the delay is read, so zero never reaches here. It
-// still has to answer with a real pause rather than none.
+// The first post-failure attempt still gets a delay.
 #[test]
 fn a_zero_attempt_count_still_pauses() {
     assert_eq!(swap_retry_backoff_secs(0), 2);
 }
 
-// Nothing left the process, so there is no hash and nothing to retry — a resend
-// would be refused the same way. `Failed` frees the level to try the whole path
-// again after its rest.
+// A blocked send has no hash to retry and frees the level.
 #[test]
 fn a_blocked_broadcast_ends_the_order_without_a_hash() {
     assert_eq!(
@@ -374,10 +367,7 @@ fn blocking_something_that_was_not_being_sent_is_rejected() {
     assert_eq!(error.outcome, "BroadcastBlocked");
 }
 
-// Without this the only exits from `Submitted` are a receipt and a revert, so a
-// nonce taken by somebody else would keep the order — and its level — stuck for
-// good. The hash stays, and the reason admits the transaction is not provably
-// dead, because ending here lets the level fire again.
+// Receipt timeout frees the level but keeps the uncertain hash.
 #[test]
 fn a_receipt_that_never_arrives_ends_the_order() {
     let released = apply(&order(submitted(ExecStep::Swap)), Outcome::ReceiptTimedOut)
@@ -404,8 +394,7 @@ fn a_timeout_makes_no_sense_before_anything_was_sent() {
     assert_eq!(error.outcome, "ReceiptTimedOut");
 }
 
-// The stamp is what the deadline is measured from, so it has to survive the
-// transition rather than be re-derived later.
+// Preserve the broadcast time used by the deadline.
 #[test]
 fn broadcasting_records_when_the_bytes_went_out() {
     let order = order(broadcasting());

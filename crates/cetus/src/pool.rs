@@ -49,9 +49,7 @@ fn json_u128(value: &Value, field: &str) -> Result<u128> {
         .with_context(|| format!("`{field}` is not a u128-compatible number"))
 }
 
-/// Cetus represents signed tick indices as Move's `I32` convention: `{ bits: u32 }`, where the
-/// top bit marks the sign and the magnitude is two's-complement over 32 bits. Mirrors
-/// [`parse_signed_liquidity_net`]'s handling of the wider `I128` used for `liquidity_net`.
+/// Parses Cetus Move `I32` bits as a two's-complement tick index.
 fn json_signed_tick_index(value: &Value, field: &str) -> Result<i32> {
     let raw = json_field(value, field)?;
     let bits_holder = raw.get("bits").unwrap_or(raw);
@@ -118,8 +116,7 @@ pub async fn fetch_pool_state(client: &mut Client, pool_id: &str) -> Result<(Poo
     Ok((state, ticks_list_id))
 }
 
-/// Enumerates every initialized tick under a pool's tick skip-list (`tick_manager.ticks.id`,
-/// as returned by [`fetch_pool_state`]).
+/// Lists initialized ticks from the pool's tick skip-list.
 pub async fn fetch_ticks(
     client: &mut Client,
     ticks_list_id: &str,

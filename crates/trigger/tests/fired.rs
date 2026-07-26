@@ -84,8 +84,7 @@ fn plan() -> ExecutionPlan {
     }
 }
 
-/// An order for `level_id` sitting in `state`, to stand in for one the daemon
-/// already created.
+/// Creates an order for `level_id` in `state`.
 fn order(level_id: &str, state: OrderState) -> Order {
     let mut order = Order::new(
         format!("o-{level_id}"),
@@ -141,8 +140,7 @@ fn a_sell_fires_at_the_threshold_and_above() {
     assert!(fired_ids(&levels, &tick(BASE_ID, WETH_BASE, 2_999.0)).is_empty());
 }
 
-// Flipping the side changes which token the level listens to, so the same tick
-// must not serve both readings.
+// Buy and sell listen to different sides of the pair.
 #[test]
 fn the_side_decides_which_token_is_priced() {
     let buying = level("buy", Side::Buy); // USDC -> WETH, priced on WETH
@@ -182,9 +180,7 @@ fn address_casing_does_not_decide_the_match() {
     );
 }
 
-// The point of consulting orders at all: a level that already acted must not
-// re-fire while its price still qualifies, which on a live feed is every few
-// seconds.
+// A spent level must not fire again.
 #[test]
 fn a_level_with_an_order_in_flight_or_filled_does_not_fire() {
     let levels = vec![level("l-1", Side::Buy)];
@@ -242,8 +238,7 @@ fn an_order_for_another_level_does_not_block() {
     );
 }
 
-// Quoting against a token the configuration cannot name would spend funds on
-// the wrong asset, so the level is skipped rather than matched loosely.
+// Skip unresolved tokens instead of matching loosely.
 #[test]
 fn a_level_the_configuration_cannot_resolve_never_fires() {
     let mut unknown_token = level("bad-token", Side::Buy);
@@ -269,9 +264,7 @@ fn one_tick_can_fire_several_levels() {
     );
 }
 
-// `fired_levels` deliberately lets a failed order re-arm its level, so this rest
-// is the only thing between a reverting swap and a fresh quote on every tick.
-// Orders here are created at second 1 and the rest lasts a minute.
+// Failed orders re-arm only after the cooldown.
 #[test]
 fn a_level_that_just_acted_has_to_rest() {
     let just_failed = [order(
@@ -297,8 +290,7 @@ fn a_level_that_just_acted_has_to_rest() {
     );
 }
 
-// The status is not consulted and does not need to be: anything other than a
-// failure already blocks the level through is_spent.
+// Non-failed orders are already blocked by `is_spent`.
 #[test]
 fn the_rest_counts_any_attempt_not_just_failures() {
     let filled = [order(

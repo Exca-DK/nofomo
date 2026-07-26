@@ -28,23 +28,18 @@ struct Feed {
     url: String,
     pair: PricePair,
     session: Option<EventSource>,
-    /// Consecutive sessions that ended without delivering a tick. Reset by a
-    /// delivered tick, so a connection that worked for a week reconnects
-    /// promptly instead of starting at the maximum delay.
+    /// Empty sessions since the last tick, used for reconnect backoff.
     failures: u32,
 }
 
 impl PriceSource for DexPaprikaSource {
-    // The same test the stream makes, asked before a rule is stored rather than
-    // after it has been armed and quietly cannot be priced.
+    // Check support before storing a rule.
     fn supports(&self, pair: &PricePair) -> bool {
         chain_slug(pair.chain_id).is_some()
     }
 
     fn stream(&self, pair: &PricePair) -> PriceStream {
-        // DexPaprika names chains itself, so a chain it has no name for cannot
-        // be quoted. Retrying would never help, so this is the one case where
-        // the stream reports and ends instead of reconnecting forever.
+        // Unsupported chains end immediately because retries cannot help.
         let Some(slug) = chain_slug(pair.chain_id) else {
             let chain_id = pair.chain_id;
             return Box::pin(futures::stream::once(async move {
@@ -69,10 +64,7 @@ impl PriceSource for DexPaprikaSource {
     }
 }
 
-// Runs until it has something to hand the caller, reconnecting as often as
-// needed. `EventSource` retries within a session, but closes for good on any
-// non-2xx response, so without this loop one transient 503 would silently end
-// the feed and the daemon would stop trading without saying so.
+// Reconnect after session-ending HTTP errors.
 async fn next_tick(feed: &mut Feed) -> anyhow::Result<PriceTick> {
     loop {
         let session = match feed.session.as_mut() {
@@ -108,8 +100,7 @@ async fn next_tick(feed: &mut Feed) -> anyhow::Result<PriceTick> {
                 }
                 // Heartbeats and frames about other tokens are not errors.
             }
-            // The session keeps retrying after this, so surface the error and
-            // let the caller decide; only a `None` means it gave up.
+            // Surface retryable errors; only `None` ends the session.
             Some(Err(error)) => return Err(anyhow::anyhow!(error)),
             None => {
                 feed.session = None;

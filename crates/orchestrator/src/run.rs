@@ -8,8 +8,7 @@ use tokio::sync::Notify;
 use crate::io::{ExecDeps, now_unix, perform};
 use crate::machine::{Action, Outcome, apply, next_action, swap_retry_backoff_secs};
 
-/// Transitions one pass may make before yielding. A venue that keeps asking for
-/// the same approval would otherwise spin here, broadcasting every round.
+/// Transition cap preventing a bad venue from spinning.
 const MAX_TRANSITIONS_PER_PASS: usize = 12;
 
 /// Wakes the execution loop.
@@ -23,23 +22,18 @@ impl Waker {
         self.notify.notify_one();
     }
 
-    /// The waking half on its own, for a producer that should not be able to
-    /// wait. The trigger takes this: it creates work and says so, but the loop
-    /// that consumes the work is the only one allowed to sleep on it.
+    /// Returns a wake-only handle for work producers.
     pub fn notifier(&self) -> Arc<Notify> {
         self.notify.clone()
     }
 
-    /// Waits until woken or the timeout expires. One permit is cached, so waking
-    /// before the wait begins is not lost.
+    /// Waits for a cached wake or timeout.
     pub async fn wait(&self, timeout: Duration) {
         let _ = tokio::time::timeout(timeout, self.notify.notified()).await;
     }
 }
 
-/// Drives open orders forward on every wake, and at least once per `poll`.
-///
-/// Runs until the task is dropped.
+/// Drives open orders on each wake or poll until dropped.
 pub async fn run(
     deps: Arc<ExecDeps>,
     orders: Arc<dyn OrderStore>,
@@ -54,10 +48,7 @@ pub async fn run(
     }
 }
 
-/// One pass over every order that is not finished.
-///
-/// Returns an error only when the orders cannot be read at all; one order
-/// failing never stops the others.
+/// Advances every open order; individual failures do not stop the pass.
 pub async fn sweep(deps: &ExecDeps, orders: &dyn OrderStore) -> Result<()> {
     let open = orders
         .list_orders()
@@ -73,18 +64,14 @@ pub async fn sweep(deps: &ExecDeps, orders: &dyn OrderStore) -> Result<()> {
     Ok(())
 }
 
-/// Advances one order as far as it goes right now, saving after every transition.
-///
-/// The new state is written before the action it enables runs, so a crash leaves
-/// behind a row that says what was already attempted.
+/// Advances one order, persisting each state before its side effect.
 pub async fn drive_order(
     deps: &ExecDeps,
     orders: &dyn OrderStore,
     order: &mut Order,
 ) -> Result<()> {
     for _ in 0..MAX_TRANSITIONS_PER_PASS {
-        // Checked before anything else. A broadcast retry deliberately leaves the
-        // state alone, so without this gate the loop would resend on the spot.
+        // Honor retry backoff before any work.
         if order.swap_retry_after_ts.is_some_and(|at| now_unix() < at) {
             return Ok(());
         }
@@ -98,8 +85,7 @@ pub async fn drive_order(
         match apply(order, outcome) {
             Ok(Some(next)) => {
                 order.state = next;
-                // Whatever retry was scheduled belonged to the attempt that just
-                // ended.
+                // Clear the completed attempt's retry.
                 order.swap_retry_after_ts = None;
                 orders
                     .upsert_order(order)
@@ -107,8 +93,7 @@ pub async fn drive_order(
                     .context("persist transition")?;
                 announce(order);
             }
-            // The state held but the attempt failed, which happens only where a
-            // resend is worth trying. Sleep on it rather than hammer the node.
+            // Back off before retrying an unchanged state.
             Ok(None) if !still_pending => {
                 order.swap_attempts = order.swap_attempts.saturating_add(1);
                 let backoff = swap_retry_backoff_secs(order.swap_attempts);
@@ -126,8 +111,7 @@ pub async fn drive_order(
                 return Ok(());
             }
             Ok(None) => {}
-            // A data or programming error rather than a trade failure, so stop
-            // here instead of marking an order failed for something it did not do.
+            // Do not turn invalid state into a trade failure.
             Err(error) => {
                 tracing::error!(order = %order.id, %error, "invalid transition");
                 return Ok(());
@@ -149,8 +133,7 @@ fn announce(order: &Order) {
         OrderState::Failed { reason, .. } => {
             tracing::warn!(order = %order.id, reason, "order failed");
         }
-        // The last moment a sweep can still see this order: it turns terminal
-        // next, its level stays blocked, and only an operator can release it.
+        // Park before the order becomes operator-only.
         OrderState::SwapQuarantined {
             reason, tx_hash, ..
         } => {

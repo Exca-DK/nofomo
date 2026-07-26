@@ -1,9 +1,7 @@
 INSERT OR IGNORE INTO schema_migrations(version, applied_at)
 VALUES (2, unixepoch());
 
--- Standing rules the daemon evaluates against a price feed. Amounts are U256
--- base units of token_in; SQLite has no NUMERIC(78,0), so they are stored as
--- decimal TEXT and parsed back into U256 in Rust.
+-- U256 token amounts use decimal TEXT because SQLite lacks 78-digit integers.
 CREATE TABLE IF NOT EXISTS levels (
     id                TEXT    NOT NULL PRIMARY KEY,
     venue             TEXT    NOT NULL,
@@ -18,14 +16,8 @@ CREATE TABLE IF NOT EXISTS levels (
     created_at        INTEGER NOT NULL
 );
 
--- One execution attempt per fired level. `plan` holds the JSON-encoded
--- ExecutionPlan the orchestrator rebuilds every transaction from, so an order
--- without one cannot be resumed. `state` holds the JSON-encoded OrderState;
--- `status` and `tx_hash` are denormalized query columns derived from it at write
--- time and never read back. Venue, chain, and the token pair are snapshotted so
--- editing the level cannot change what the order committed.
--- Note the two U256 encodings: `reserved_amount` is decimal, but amounts nested
--- inside the `state` JSON are 0x-prefixed hex (how serde serializes U256).
+-- Each order snapshots its plan and market, while status and hash are query columns.
+-- `reserved_amount` is decimal; U256 values inside state JSON use serde hex.
 CREATE TABLE IF NOT EXISTS orders (
     id                  TEXT    NOT NULL PRIMARY KEY,
     level_id            TEXT    NOT NULL REFERENCES levels(id),

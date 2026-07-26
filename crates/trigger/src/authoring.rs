@@ -9,10 +9,7 @@ use tempo_agentic_strategy::{Level, base_token};
 
 use crate::resolver::TokenResolver;
 
-/// What a person or an agent supplies when writing a rule.
-///
-/// Everything here is in human vocabulary — chain and token names, an amount in
-/// whole units. Turning it into a [`Level`] is what checks it.
+/// Human-readable input for a rule.
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct LevelDraft {
     pub id: String,
@@ -28,13 +25,7 @@ pub struct LevelDraft {
     pub slippage_bps: u16,
 }
 
-/// Turns a draft into a rule the daemon can act on.
-///
-/// Returns an error when the chain or either token is unconfigured, when the
-/// slippage exceeds `max_slippage_bps`, or when the amount is not a number.
-///
-/// Checking here rather than at execution matters: a rule naming a chain or a
-/// token nobody can price would be stored happily and then never fire.
+/// Validates and resolves a draft into an executable rule.
 pub fn validate_level(
     evm: &EvmConfig,
     max_slippage_bps: u16,
@@ -61,8 +52,7 @@ pub fn validate_level(
     let level = Level {
         id: draft.id.clone(),
         venue: draft.venue.parse()?,
-        // Taken from the configuration rather than the draft, so the stored
-        // spelling always matches what the resolver looks up.
+        // Keep the configured spelling used by the resolver.
         chain: chain.name.clone(),
         token_in: draft.token_in.to_ascii_uppercase(),
         token_out: draft.token_out.to_ascii_uppercase(),
@@ -73,9 +63,7 @@ pub fn validate_level(
         slippage_bps: draft.slippage_bps,
     };
 
-    // Asked last, because it takes the finished rule to know which token would
-    // be watched. A rule that fails here used to store fine, subscribe once, log
-    // a single warning and then stay armed and dead.
+    // Reject rules the source cannot price.
     let pair = TokenResolver::from_config(evm)
         .price_pair(&level)
         .context("cannot work out which token this rule would be priced on")?;

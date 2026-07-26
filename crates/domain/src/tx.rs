@@ -1,9 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Chain state needed to finalize a transaction, fetched once per execution step.
-///
-/// Kept separate from the transaction itself because the venue knows the
-/// calldata but not the account's nonce or the current fee market.
+/// Chain state fetched to finalize one transaction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TxContext {
     pub chain_id: u64,
@@ -12,10 +9,7 @@ pub struct TxContext {
     pub max_priority_fee_per_gas: u128,
 }
 
-/// An EIP-1559 transaction ready to be signed.
-///
-/// Fields are plain types rather than chain-library types so the domain stays
-/// free of an EVM dependency; the signer converts them.
+/// An EIP-1559 transaction ready to sign, using chain-independent types.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct UnsignedTx {
     pub chain_id: u64,
@@ -31,11 +25,7 @@ pub struct UnsignedTx {
     pub data: String,
 }
 
-/// A signed transaction plus the hash it will have on chain.
-///
-/// The hash is derived locally from the signed bytes, so both fields can be
-/// persisted before the transaction is ever sent. That is what lets a restarted
-/// process tell whether it already broadcast something.
+/// Signed bytes and their locally derived hash, persisted before broadcast.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SignedTx {
     /// Raw EIP-2718 bytes, 0x-prefixed, ready for `eth_sendRawTransaction`.

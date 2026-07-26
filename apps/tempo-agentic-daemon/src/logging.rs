@@ -6,10 +6,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
 
-/// Sends events to a daily file and to stderr.
-///
-/// The returned guard flushes the file buffer when dropped, so it has to be held
-/// for as long as the process runs or the tail of the log is lost.
+/// Logs to stderr and a daily file; keep the returned flush guard alive.
 pub fn install(dir: &Path) -> Result<WorkerGuard> {
     std::fs::create_dir_all(dir)
         .with_context(|| format!("cannot create log directory {}", dir.display()))?;

@@ -1,6 +1,5 @@
 /target
-# Unanchored on purpose: an anchored `/.env` misses infra/local/.env, which is
-# exactly where the keys ended up.
+# Keep unanchored to cover infra/local/.env.
 .env
 .env.*
 !.env.example

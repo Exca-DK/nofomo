@@ -13,14 +13,11 @@ pub trait LevelStore: Send + Sync {
 
     async fn list_levels(&self) -> Result<Vec<Level>>;
 
-    /// Deletes a level by ID. Succeeds when no such level exists.
-    ///
-    /// Returns an error if the level still has orders referencing it.
+    /// Deletes a level unless an order references it; missing levels succeed.
     async fn delete_level(&self, id: &str) -> Result<()>;
 }
 
-/// Storage port for execution attempts. Orders are never deleted; a completed
-/// order stays as the durable record of what the daemon did.
+/// Durable storage for execution attempts.
 #[async_trait]
 pub trait OrderStore: Send + Sync {
     /// Idempotently upserts an order, keyed on its ID.

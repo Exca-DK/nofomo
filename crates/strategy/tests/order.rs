@@ -61,8 +61,7 @@ fn status_projects_every_state() {
             OrderStatus::Pending,
         ),
         (
-            // Each step carries a different value: the status projection must
-            // depend only on the phase, never on which transaction it is.
+            // Status depends on the phase, not the transaction step.
             OrderState::SwapReady {
                 step: ExecStep::Cancel,
                 amount_in,

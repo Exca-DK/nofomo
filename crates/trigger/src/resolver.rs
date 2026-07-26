@@ -4,11 +4,7 @@ use tempo_agentic_config::EvmConfig;
 use tempo_agentic_price::PricePair;
 use tempo_agentic_strategy::{Level, base_token};
 
-/// Bridges the two vocabularies in play: a level names tokens the way a person
-/// does (`base`, `WETH`), a price feed names them the way a chain does (`8453`,
-/// `0x4200…0006`).
-///
-/// Built from the configuration, which is the only place that holds both.
+/// Maps configured chain and token names to feed identifiers.
 pub struct TokenResolver {
     chains: HashMap<String, ResolvedChain>,
 }
@@ -42,10 +38,7 @@ impl TokenResolver {
         Self { chains }
     }
 
-    /// The pair whose price this level triggers on.
-    ///
-    /// `None` when the configuration names neither that chain nor that token,
-    /// which means nothing can ever price the level.
+    /// Resolves the level's priced pair, or `None` if unconfigured.
     pub fn price_pair(&self, level: &Level) -> Option<PricePair> {
         let chain = self.chains.get(&level.chain.to_ascii_lowercase())?;
         let address = chain.tokens.get(&base_token(level).to_ascii_lowercase())?;

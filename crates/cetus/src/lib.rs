@@ -23,11 +23,7 @@ use tempo_agentic_domain::{
 const CLOCK_OBJECT_ID: &str = "0x6";
 const MAX_TICKS_FETCHED: usize = 20_000;
 
-/// Sui trade venue that quotes and swaps directly against a Cetus CLMM pool.
-///
-/// Route discovery, swap-output math, and transaction construction all happen locally against
-/// on-chain state (see [`pool`] and [`swap_math`]) — there is no dependency on Cetus's REST
-/// aggregator, which is unreliable on testnet.
+/// Cetus CLMM venue built directly from on-chain state.
 pub struct CetusVenue {
     rpc_url: String,
     constants: NetworkConstants,
@@ -118,8 +114,7 @@ impl CetusVenue {
         })
     }
 
-    /// Finds owned coin objects of `coin_type` summing to at least `amount`, merges them if
-    /// needed, and splits off a coin argument holding exactly `amount`.
+    /// Merges owned coins and splits out exactly `amount`.
     async fn fund_exact_coin(
         &self,
         client: &mut Client,
@@ -227,15 +222,14 @@ impl TradeVenue for CetusVenue {
 
         let mut client = self.client()?;
         let (state, _) = pool::fetch_pool_state(&mut client, pool_id).await?;
-        let _ = state; // pool existence/pause already validated by fetch_pool_state
+        let _ = state; // Pool existence and pause state are already validated.
 
         let signer = self.load_signer()?;
         let sender = signer.verifying_key().derive_address();
         let sender_address = Address::from_str(&sender.to_string())
             .context("failed to parse derived Sui address")?;
 
-        // Re-discover the pool's coin types from the pool object itself so execute() does not
-        // need to trust caller-supplied types beyond what quote() already fixed via `pool_id`.
+        // Trust the quoted pool ID, then re-read its coin types on chain.
         let discovered_pool = pool_id.clone();
         let (coin_type_a, coin_type_b) = pool_coin_types(&mut client, &discovered_pool).await?;
 

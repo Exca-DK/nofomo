@@ -99,10 +99,7 @@ fn every_order_state_variant_round_trips_through_json() {
     }
 }
 
-// `submitted_at` was added after rows had already been written, so it defaults
-// rather than being required. A row from before it existed has to keep loading —
-// as long overdue, which is the right reading for a transaction nobody has
-// checked on since the process last restarted.
+// Old rows without `submitted_at` load as overdue.
 #[test]
 fn a_submitted_row_written_before_the_deadline_existed_still_loads() {
     let older = json!({
@@ -123,8 +120,7 @@ fn a_submitted_row_written_before_the_deadline_existed_still_loads() {
 
 #[test]
 fn every_order_state_variant_round_trips_through_a_json_value() {
-    // `crates/storage` stores the state column as a `serde_json::Value`, not
-    // a string, so that path is exercised separately from `to_string`.
+    // Exercise storage's JSON-value round trip.
     for state in every_state() {
         let order = with_state(state);
         let value = serde_json::to_value(&order).unwrap();

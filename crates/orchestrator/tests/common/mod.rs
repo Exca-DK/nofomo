@@ -1,5 +1,4 @@
-// Cargo compiles this module into every test binary that declares it, so
-// whatever one binary does not call looks unused to the compiler.
+// Each test binary uses a different subset of these helpers.
 #![allow(dead_code)]
 
 use std::collections::HashMap;
@@ -62,10 +61,7 @@ pub fn order(id: &str, chain_id: u64) -> Order {
     Order::new(id.into(), &level(), plan, 0)
 }
 
-/// Reads the stored row at the moment a fake is called.
-///
-/// This is what proves the crash-safety property: the phase seen here is the one
-/// that was already durable when the side effect ran, not the one it produced.
+/// Captures the durable phase visible when a fake runs.
 #[derive(Clone)]
 struct Spy {
     orders: Arc<SqliteOrderStore>,
@@ -166,8 +162,7 @@ struct FakeChain {
     receipts: Vec<Receipt>,
     receipt_calls: AtomicUsize,
     broadcasts: AtomicUsize,
-    /// Raw bytes of every send, so a test can prove a resumed order reused the
-    /// signature it already had instead of making a new one.
+    /// Raw bytes of every send.
     sent: Mutex<Vec<String>>,
     broadcast_fails: bool,
 }
@@ -220,8 +215,7 @@ impl ChainClient for FakeChain {
     }
 }
 
-/// What the fakes answer. Each script repeats its last entry once exhausted, so
-/// a test only spells out the calls it actually cares about.
+/// Scripted fake responses, repeating the last entry.
 pub struct Script {
     pub steps: Vec<Vec<ExecStep>>,
     pub receipts: Vec<Receipt>,
@@ -254,8 +248,7 @@ pub struct Harness {
 }
 
 impl Harness {
-    /// Builds a database holding one order, `o-1`, in `SwapReady`, with the fakes
-    /// watching that row.
+    /// Builds a database with order `o-1` in `SwapReady`.
     pub async fn new(name: &str, script: Script) -> Self {
         let path = std::env::temp_dir().join(format!(
             "tempo-agentic-orchestrator-{name}-{}-{}.db",
@@ -271,11 +264,7 @@ impl Harness {
         harness
     }
 
-    /// Closes the database and opens the very same file again with fresh fakes.
-    ///
-    /// This stands in for a restart, so nothing is seeded: the level and the
-    /// order are already on disk. Migrations are idempotent, so replaying them
-    /// on reopen is safe.
+    /// Reopens the same database with fresh fakes to simulate restart.
     pub async fn reopen(self, script: Script) -> Self {
         let path = self.path.clone();
         drop(self);

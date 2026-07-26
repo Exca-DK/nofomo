@@ -47,8 +47,7 @@ async fn signing_preserves_every_field_and_derives_the_hash_offline() {
     assert_eq!(envelope.value(), U256::ZERO);
     assert_eq!(envelope.input().to_string(), tx.data);
 
-    // The hash the signer reported must be the one the decoded bytes carry:
-    // that is what lets it be persisted before the transaction is broadcast.
+    // The reported hash must match the signed bytes before broadcast.
     assert_eq!(format!("{:#x}", envelope.tx_hash()), signed.hash);
 }
 

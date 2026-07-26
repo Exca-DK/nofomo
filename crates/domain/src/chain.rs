@@ -10,10 +10,7 @@ pub fn is_native_token(address: &str) -> bool {
     address.eq_ignore_ascii_case(NATIVE_TOKEN_ADDRESS)
 }
 
-/// Port for one EVM chain's node.
-///
-/// Split from [`crate::TradeVenue`] so a venue only builds transactions and
-/// never talks to a node directly.
+/// Node operations kept separate from transaction-building venues.
 #[async_trait]
 pub trait ChainClient: Send + Sync {
     fn chain_id(&self) -> u64;
@@ -21,8 +18,7 @@ pub trait ChainClient: Send + Sync {
     /// Reads the nonce and current fee market for `from`.
     async fn tx_context(&self, from: &str) -> Result<TxContext>;
 
-    /// Token balance in raw base units as a decimal string. The zero address
-    /// reads the native balance.
+    /// Raw token balance; the zero address selects the native currency.
     async fn balance_of(&self, token: &str, owner: &str) -> Result<String>;
 
     /// ERC-20 allowance in raw base units as a decimal string.
@@ -31,10 +27,7 @@ pub trait ChainClient: Send + Sync {
     /// Estimates the gas limit for a call, used when a venue's API omits one.
     async fn estimate_gas(&self, from: &str, to: &str, value: &str, data: &str) -> Result<u64>;
 
-    /// Submits raw signed bytes and returns the transaction hash.
-    ///
-    /// Re-sending an already-submitted transaction must succeed, so a retry
-    /// after a crash does not turn a landed transaction into an error.
+    /// Broadcasts signed bytes; identical rebroadcasts must succeed.
     async fn broadcast(&self, signed: &SignedTx) -> Result<String>;
 
     /// Looks up the receipt without waiting for it.

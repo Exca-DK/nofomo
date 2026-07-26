@@ -1,8 +1,8 @@
 use alloy_primitives::U256;
 use serde_json::json;
 use std::path::PathBuf;
-use tempo_agentic_daemon::operate::resolve_quarantine;
 use tempo_agentic_domain::{ExecutionPlan, VenueName};
+use tempo_agentic_orchestrator::resolve_quarantine;
 use tempo_agentic_storage::{SqliteLevelStore, SqliteOrderStore, connect_pool};
 use tempo_agentic_strategy::{Level, LevelStore, Order, OrderState, OrderStore, Side};
 use tempo_agentic_trigger::is_spent;
@@ -14,12 +14,10 @@ struct Fixture {
 }
 
 impl Fixture {
-    // Named after the test rather than stamped with a clock: these run in
-    // parallel in one process, and `SystemTime::now` is coarse enough that they
-    // would otherwise share a database and delete it from under each other.
+    // Test names stay unique under parallel execution.
     async fn open(name: &str) -> Self {
         let database = std::env::temp_dir().join(format!(
-            "tempo-agentic-daemon-operate-{}-{name}.db",
+            "tempo-agentic-orchestrator-quarantine-{}-{name}.db",
             std::process::id(),
         ));
         let pool = connect_pool(&database).await.unwrap();
@@ -30,8 +28,7 @@ impl Fixture {
         }
     }
 
-    // An order cannot exist without the rule it came from: the schema has a
-    // foreign key on `level_id`.
+    // Satisfy the order's `level_id` foreign key.
     async fn put(&self, id: &str, state: OrderState) {
         let level = Level {
             id: "l-1".into(),
@@ -75,8 +72,7 @@ fn quarantined() -> OrderState {
     }
 }
 
-// The whole point of the command: `failed` is the one status that leaves a level
-// able to fire again, so releasing a quarantine has to land exactly there.
+// Release must land on the only status that re-arms a level.
 #[tokio::test]
 async fn releasing_a_quarantine_frees_the_level_it_blocked() {
     let fixture = Fixture::open("frees-level").await;
@@ -98,8 +94,7 @@ async fn releasing_a_quarantine_frees_the_level_it_blocked() {
     fixture.cleanup();
 }
 
-// Releasing an order that is still working would rewind live execution, so it
-// has to be refused rather than quietly accepted.
+// Refuse to rewind an active order.
 #[tokio::test]
 async fn an_order_that_is_not_quarantined_is_refused() {
     let fixture = Fixture::open("not-quarantined").await;

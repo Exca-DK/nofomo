@@ -18,10 +18,7 @@ pub struct Wiring {
     pub trigger: TriggerDeps,
 }
 
-/// Turns configuration into the implementations the two loops run on.
-///
-/// Returns an error if the graph client, a chain RPC URL, or the keystore cannot
-/// be initialized.
+/// Builds runtime dependencies from configuration.
 pub fn build(
     config: &Config,
     allow_broadcast: bool,
@@ -37,8 +34,7 @@ pub fn build(
         chains.insert(chain.chain_id, Arc::new(client));
     }
 
-    // Decrypted once at startup rather than per transaction, so scrypt never runs
-    // on the async runtime mid-trade.
+    // Decrypt once to keep scrypt out of the async trade path.
     let signer: Arc<dyn Signer> = Arc::new(EvmSigner::from_keystore(
         Path::new(&config.evm.keystore_path),
         Path::new(&config.evm.password_file),
