@@ -210,7 +210,9 @@ impl UniswapVenue {
             .http
             .post(format!("{}/{}", self.api_url, endpoint))
             .header("x-api-key", &self.api_key)
-            .header("x-universal-router-version", "2.0")
+            // No router version is pinned on purpose. Asking for one the chain has
+            // no deployment of answers "no quotes available" for every pair, which
+            // is indistinguishable from a market with no liquidity.
             .header("x-permit2-disabled", "true")
             .json(body)
             .send()

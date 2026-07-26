@@ -248,3 +248,31 @@ async fn rejects_approval_calldata_to_an_unexpected_spender() {
         "unexpected error: {error}"
     );
 }
+
+#[tokio::test]
+async fn the_quote_request_pins_no_universal_router_version() {
+    let server = MockServer::start().await;
+    mount_quote(&server, valid_quote_response()).await;
+    let venue = venue(&server.uri(), "UNISWAP_TEST_KEY_HEADERS").await;
+    venue.quote(&request()).await.unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let headers = &requests
+        .first()
+        .expect("the venue must have asked for a quote")
+        .headers;
+    // A chain without that router deployment answers "no quotes available" for
+    // every pair when the version is pinned, which reads as missing liquidity.
+    assert!(
+        !headers.contains_key("x-universal-router-version"),
+        "pinning a router version hides whole chains: {headers:?}"
+    );
+    // Permit2 stays off: this venue signs a plain transaction and cannot sign a permit.
+    assert_eq!(
+        headers
+            .get("x-permit2-disabled")
+            .map(|value| value.as_bytes()),
+        Some("true".as_bytes()),
+        "{headers:?}"
+    );
+}
