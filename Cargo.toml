@@ -28,11 +28,13 @@ tempo-agentic-daemon = { path = "apps/tempo-agentic-daemon" }
 alloy-primitives = { version = "1.6", features = ["serde"] }
 anyhow = "1"
 async-trait = "0.1"
+bcs = "0.1"
 clap = { version = "4", features = ["derive", "env"] }
 futures = "0.3"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["server", "server-auto", "service", "tokio"] }
+inquire = { version = "0.9", default-features = false, features = ["crossterm"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
 rand = "0.8"
 reqwest-eventsource = "0.6"
@@ -42,6 +44,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["macros", "runtime-tokio", "sqlite"] }
+sui-crypto = { git = "https://github.com/MystenLabs/sui-rust-sdk", version = "0.3.1", features = ["ed25519"] }
+sui-rpc = { git = "https://github.com/MystenLabs/sui-rust-sdk", version = "0.3.2" }
+sui-sdk-types = { git = "https://github.com/MystenLabs/sui-rust-sdk", version = "0.3.2" }
+sui-transaction-builder = { git = "https://github.com/MystenLabs/sui-rust-sdk", version = "0.3.2" }
 thiserror = "2"
 tokio = { version = "1", features = ["io-std", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "0.1"

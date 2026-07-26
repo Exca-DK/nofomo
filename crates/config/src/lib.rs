@@ -19,8 +19,19 @@ pub struct Config {
     pub dexpaprika_stream_url: String,
     pub uniswap: UniswapConfig,
     pub graph: GraphConfig,
+    pub keys: KeysConfig,
     pub evm: EvmConfig,
     pub sui: SuiConfig,
+}
+
+/// Paths to owner-only raw key files.
+#[derive(Clone, Debug, Deserialize)]
+pub struct KeysConfig {
+    /// Hex secp256k1 key shared by EVM chains.
+    pub evm: String,
+    /// Base64 ed25519 keypair, required when Sui is enabled.
+    #[serde(default)]
+    pub sui: Option<String>,
 }
 
 /// Configuration for Uniswap API integration.
@@ -41,11 +52,8 @@ pub struct GraphConfig {
     pub min_pool_tvl_usd: String,
 }
 
-/// Configuration for EVM node connections and wallet credentials.
 #[derive(Clone, Debug, Deserialize)]
 pub struct EvmConfig {
-    pub keystore_path: String,
-    pub password_file: String,
     pub chains: Vec<EvmChain>,
 }
 
@@ -74,7 +82,9 @@ pub struct SuiConfig {
     pub enabled: bool,
     pub network: SuiNetwork,
     pub rpc_url: String,
-    pub keystore_path: Option<String>,
+    /// Ceiling on what one swap may spend on gas, in MIST.
+    #[serde(default = "default_sui_gas_budget")]
+    pub gas_budget: u64,
 }
 
 /// Sui network used to resolve venue package and object IDs.
@@ -122,7 +132,7 @@ impl Config {
         if self.evm.chains.is_empty() {
             bail!("configure at least one EVM chain");
         }
-        validate_secret_files(&self.evm.keystore_path, &self.evm.password_file)?;
+        self.validate_keys()?;
         let mut chain_ids = HashSet::new();
         for chain in &self.evm.chains {
             if !is_supported_evm_chain(chain.chain_id) {
@@ -160,13 +170,28 @@ impl Config {
             }
         }
         if self.sui.enabled {
-            if let Some(keystore_path) = &self.sui.keystore_path {
-                let path = Path::new(keystore_path);
-                if !path.is_absolute() || !path.is_file() {
-                    bail!("sui.keystore_path must be an existing absolute file");
-                }
-            }
             validate_http_url(&self.sui.rpc_url).context("Sui RPC URL")?;
+        }
+        Ok(())
+    }
+
+    fn validate_keys(&self) -> Result<()> {
+        let mut keys = vec![("keys.evm", self.keys.evm.as_str())];
+        if self.sui.enabled {
+            let sui = self
+                .keys
+                .sui
+                .as_deref()
+                .context("keys.sui is required while sui.enabled is true")?;
+            keys.push(("keys.sui", sui));
+        }
+
+        let mut seen = HashSet::new();
+        for (name, path) in keys {
+            validate_key_file(path).context(name)?;
+            if !seen.insert(path) {
+                bail!("each chain family needs its own key file, but {path} is shared");
+            }
         }
         Ok(())
     }
@@ -231,35 +256,18 @@ fn validate_positive_decimal(value: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_secret_files(keystore: &str, password_file: &str) -> Result<()> {
-    let keystore_path = Path::new(keystore);
-    let password_path = Path::new(password_file);
-    if !keystore_path.is_absolute() || !password_path.is_absolute() {
-        bail!("keystore_path and password_file must be absolute paths");
+// Key parsing belongs to the vault; configuration checks file safety.
+fn validate_key_file(path: &str) -> Result<()> {
+    let path = Path::new(path);
+    if !path.is_absolute() {
+        bail!("must be an absolute path");
     }
-    if keystore_path == password_path {
-        bail!("keystore_path and password_file must differ");
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("cannot read key file {}", path.display()))?;
+    if contents.trim().is_empty() {
+        bail!("key file {} is empty", path.display());
     }
-    let keystore_json: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(keystore_path).with_context(|| {
-            format!("cannot read encrypted keystore {}", keystore_path.display())
-        })?)
-        .context("Foundry keystore is not valid JSON")?;
-    if keystore_json
-        .get("crypto")
-        .or_else(|| keystore_json.get("Crypto"))
-        .is_none()
-    {
-        bail!("Foundry keystore has no encrypted crypto section");
-    }
-    let password = fs::read_to_string(password_path)
-        .with_context(|| format!("cannot read password file {}", password_path.display()))?;
-    if password.trim().is_empty() {
-        bail!("password file must not be empty");
-    }
-    validate_private_permissions(keystore_path)?;
-    validate_private_permissions(password_path)?;
-    Ok(())
+    validate_private_permissions(path)
 }
 
 #[cfg(unix)]
@@ -307,18 +315,21 @@ fn default_max_slippage_bps() -> u16 {
     500
 }
 
+// Default: 0.1 SUI.
+fn default_sui_gas_budget() -> u64 {
+    100_000_000
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Config, is_supported_evm_chain, validate_hex_address};
 
-    // Only the keystore and password files are deliberately missing.
-    const WITHOUT_KEYSTORE: &str = r#"{
+    const WITHOUT_KEY: &str = r#"{
         "state_db_path": "/tmp/tempo-agentic-test/state.db",
         "uniswap": { "api_key_env": "UNISWAP_API_KEY" },
         "graph": { "api_key_env": "GRAPH_API_KEY" },
+        "keys": { "evm": "/tmp/tempo-agentic-test/absent.key" },
         "evm": {
-            "keystore_path": "/tmp/tempo-agentic-test/absent.json",
-            "password_file": "/tmp/tempo-agentic-test/absent.password",
             "chains": [{
                 "name": "base",
                 "chain_id": 8453,
@@ -332,26 +343,69 @@ mod tests {
         "sui": { "enabled": false, "network": "testnet", "rpc_url": "https://example.invalid" }
     }"#;
 
-    // Key setup must read config before the keystore exists.
-    #[test]
-    fn an_unvalidated_load_reads_a_config_whose_keystore_is_not_there_yet() {
+    fn scratch_config(name: &str, body: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "tempo-agentic-config-{}-unvalidated.json",
+            "tempo-agentic-config-{}-{name}.json",
             std::process::id()
         ));
-        std::fs::write(&path, WITHOUT_KEYSTORE).unwrap();
+        std::fs::write(&path, body).unwrap();
+        path
+    }
 
-        let parsed = Config::load_unvalidated(&path).expect("parsing must not need the keystore");
-        assert_eq!(
-            parsed.evm.keystore_path,
-            "/tmp/tempo-agentic-test/absent.json"
-        );
+    #[test]
+    fn an_unvalidated_load_reads_a_config_whose_key_is_not_there_yet() {
+        let path = scratch_config("unvalidated", WITHOUT_KEY);
+
+        let parsed = Config::load_unvalidated(&path).expect("parsing must not need the key");
+        assert_eq!(parsed.keys.evm, "/tmp/tempo-agentic-test/absent.key");
 
         let refused = Config::load(&path).expect_err("a checked load has to refuse it");
         assert!(
-            format!("{refused:#}").contains("keystore"),
-            "the keystore is the only thing wrong with it: {refused:#}"
+            format!("{refused:#}").contains("keys.evm"),
+            "the key is the only thing wrong with it: {refused:#}"
         );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_world_readable_key_file_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let key = std::env::temp_dir().join(format!(
+            "tempo-agentic-config-{}-readable.key",
+            std::process::id()
+        ));
+        std::fs::write(&key, "0xabc").unwrap();
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let path = scratch_config(
+            "readable",
+            &WITHOUT_KEY.replace(
+                "/tmp/tempo-agentic-test/absent.key",
+                &key.display().to_string(),
+            ),
+        );
+        let refused = Config::load(&path).expect_err("a checked load has to refuse it");
+        assert!(
+            format!("{refused:#}").contains("group or others"),
+            "permissions are the only thing wrong with it: {refused:#}"
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&key);
+    }
+
+    #[test]
+    fn enabling_sui_without_a_key_is_refused() {
+        let path = scratch_config(
+            "sui-without-key",
+            &WITHOUT_KEY.replace(r#""enabled": false"#, r#""enabled": true"#),
+        );
+
+        let refused = Config::load(&path).expect_err("a checked load has to refuse it");
+        assert!(format!("{refused:#}").contains("keys.sui"), "{refused:#}");
 
         let _ = std::fs::remove_file(&path);
     }

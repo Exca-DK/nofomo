@@ -1,5 +1,5 @@
 use alloy_primitives::U256;
-use tempo_agentic_domain::{ExecStep, ExecutionPlan, SignedTx, VenueName};
+use tempo_agentic_domain::{ExecStep, ExecutionPlan, VenueName};
 use tempo_agentic_strategy::{Level, Order, OrderState, Side};
 
 use tempo_agentic_orchestrator::{
@@ -62,12 +62,8 @@ fn broadcasting() -> OrderState {
     }
 }
 
-fn signed() -> SignedTx {
-    SignedTx {
-        raw: "0x02f8".into(),
-        hash: "0xdef".into(),
-    }
-}
+const SIGNED_TX: &str = "0x02f8";
+const TX_HASH: &str = "0xdef";
 
 #[test]
 fn every_state_asks_for_its_own_action() {
@@ -83,7 +79,10 @@ fn every_state_asks_for_its_own_action() {
             tx_hash: "0xdef".into(),
             withdraw_action_id: None,
         })),
-        Action::Broadcast { signed: signed() }
+        Action::Broadcast {
+            signed_tx: SIGNED_TX.into(),
+            tx_hash: TX_HASH.into(),
+        }
     );
     assert_eq!(
         next_action(&order(submitted(ExecStep::Swap))),
@@ -117,7 +116,8 @@ fn signing_records_the_step_the_venue_chose() {
         &order,
         Outcome::Signed {
             step: ExecStep::Approval,
-            signed: signed(),
+            signed_tx: SIGNED_TX.into(),
+            tx_hash: TX_HASH.into(),
         },
     )
     .unwrap()

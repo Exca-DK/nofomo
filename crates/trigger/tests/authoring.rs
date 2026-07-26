@@ -30,8 +30,6 @@ const MAX_SLIPPAGE_BPS: u16 = 500;
 
 fn evm() -> EvmConfig {
     EvmConfig {
-        keystore_path: "/dev/null".into(),
-        password_file: "/dev/null".into(),
         chains: vec![EvmChain {
             name: "base".into(),
             chain_id: 8453,

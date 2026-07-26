@@ -145,6 +145,16 @@ pub enum ExecutionPlan {
     },
 }
 
+impl ExecutionPlan {
+    /// Chain used for node lookup and signing.
+    pub fn chain(&self) -> crate::ChainId {
+        match self {
+            Self::Uniswap { chain_id, .. } => crate::ChainId::Evm(*chain_id),
+            Self::Cetus { .. } => crate::ChainId::Sui,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct StoredQuote {
     pub id: String,

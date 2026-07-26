@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+inquire.workspace = true
+tempo-agentic-cetus.workspace = true
 tempo-agentic-chain.workspace = true
 tempo-agentic-config.workspace = true
 tempo-agentic-domain.workspace = true

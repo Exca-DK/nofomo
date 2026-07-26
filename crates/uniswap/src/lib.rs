@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use tempo_agentic_config::{EvmChain, EvmConfig, EvmToken, UniswapConfig, secret_from_env};
 use tempo_agentic_domain::{
-    ChainClient, ExecStep, ExecutionPlan, QuoteDraft, QuoteTradeRequest, TradeVenue, TxContext,
+    EvmNode, EvmTx, ExecStep, ExecutionPlan, QuoteDraft, QuoteTradeRequest, TradeVenue, TxContext,
     UnsignedTx, is_native_token,
 };
 use tempo_agentic_graph::GraphClient;
@@ -23,7 +23,7 @@ pub struct UniswapVenue {
     evm: EvmConfig,
     /// Signer's public address used for quotes and approvals.
     wallet_address: String,
-    chains: HashMap<u64, Arc<dyn ChainClient>>,
+    chains: HashMap<u64, Arc<dyn EvmNode>>,
     graph: GraphClient,
     max_slippage_bps: u16,
 }
@@ -41,7 +41,7 @@ impl UniswapVenue {
         config: &UniswapConfig,
         evm: &EvmConfig,
         wallet_address: String,
-        chains: HashMap<u64, Arc<dyn ChainClient>>,
+        chains: HashMap<u64, Arc<dyn EvmNode>>,
         graph: GraphClient,
         max_slippage_bps: u16,
     ) -> Result<Self> {
@@ -57,7 +57,7 @@ impl UniswapVenue {
         })
     }
 
-    fn chain_client(&self, chain_id: u64) -> Result<&Arc<dyn ChainClient>> {
+    fn chain_client(&self, chain_id: u64) -> Result<&Arc<dyn EvmNode>> {
         self.chains
             .get(&chain_id)
             .with_context(|| format!("no chain client configured for chain {chain_id}"))
@@ -234,11 +234,20 @@ impl UniswapVenue {
         ctx: &TxContext,
         expected_to: &str,
         expected_value: &str,
-    ) -> Result<UnsignedTx> {
+    ) -> Result<EvmTx> {
+        let TxContext::Evm {
+            chain_id,
+            nonce,
+            max_fee_per_gas,
+            max_priority_fee_per_gas,
+        } = ctx
+        else {
+            bail!("Uniswap needs EVM chain state, not another family's");
+        };
         validate_transaction(
             transaction,
             &self.wallet_address,
-            ctx.chain_id,
+            *chain_id,
             expected_to,
             expected_value,
         )?;
@@ -249,18 +258,18 @@ impl UniswapVenue {
         let gas_limit = match api_gas_limit(transaction)? {
             Some(gas_limit) => gas_limit,
             None => {
-                self.chain_client(ctx.chain_id)?
+                self.chain_client(*chain_id)?
                     .estimate_gas(&self.wallet_address, &to, &value, &data)
                     .await?
             }
         };
 
-        Ok(UnsignedTx {
-            chain_id: ctx.chain_id,
-            nonce: ctx.nonce,
+        Ok(EvmTx {
+            chain_id: *chain_id,
+            nonce: *nonce,
             gas_limit,
-            max_fee_per_gas: ctx.max_fee_per_gas,
-            max_priority_fee_per_gas: ctx.max_priority_fee_per_gas,
+            max_fee_per_gas: *max_fee_per_gas,
+            max_priority_fee_per_gas: *max_priority_fee_per_gas,
             to,
             value,
             data,
@@ -357,10 +366,16 @@ impl TradeVenue for UniswapVenue {
         else {
             bail!("Uniswap received a DeepBook execution plan");
         };
-        if *chain_id != ctx.chain_id {
+        let TxContext::Evm {
+            chain_id: ctx_chain_id,
+            ..
+        } = ctx
+        else {
+            bail!("Uniswap needs EVM chain state, not another family's");
+        };
+        if chain_id != ctx_chain_id {
             bail!(
-                "transaction context is for chain {} but the plan targets {chain_id}",
-                ctx.chain_id
+                "transaction context is for chain {ctx_chain_id} but the plan targets {chain_id}"
             );
         }
 
@@ -378,6 +393,7 @@ impl TradeVenue for UniswapVenue {
                 validate_approval_calldata(transaction, PROXY_APPROVAL_ADDRESS)?;
                 self.build_unsigned(transaction, ctx, input_token, "0")
                     .await
+                    .map(UnsignedTx::Evm)
             }
             ExecStep::Swap => {
                 let swap = self
@@ -400,6 +416,7 @@ impl TradeVenue for UniswapVenue {
                 };
                 self.build_unsigned(transaction, ctx, PROXY_APPROVAL_ADDRESS, expected_value)
                     .await
+                    .map(UnsignedTx::Evm)
             }
         }
     }

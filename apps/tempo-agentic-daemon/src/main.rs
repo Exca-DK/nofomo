@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use tempo_agentic_config::Config;
-use tempo_agentic_daemon::{Options, provision, run};
+use tempo_agentic_daemon::{Options, keystore, run};
+use tempo_agentic_domain::{ChainFamily, Signer};
 use tempo_agentic_orchestrator::resolve_quarantine;
 use tempo_agentic_price_dexpaprika::DexPaprikaSource;
 use tempo_agentic_storage::{SqliteLevelStore, SqliteOrderStore, connect_pool};
@@ -29,16 +30,10 @@ enum Command {
     },
     /// Create throwaway local dev accounts if missing without modifying git.
     Bootstrap,
-    /// Import an existing account by private key instead of generating a throwaway one.
-    ImportKey {
-        #[arg(long, value_enum)]
-        chain: ImportChain,
-        /// Raw private key (EVM: 0x-prefixed hex; Sui: base64 keypair string).
-        #[arg(long)]
-        private_key: String,
-        /// Overwrite an existing keystore/keypair for this chain.
-        #[arg(long)]
-        force: bool,
+    /// Manage signing keys.
+    Keystore {
+        #[command(subcommand)]
+        action: KeystoreCommand,
     },
     /// Validate config, secrets, and SQLite without printing secrets.
     Health,
@@ -54,11 +49,23 @@ enum Command {
     },
 }
 
-/// Which keystore an imported private key belongs in.
-#[derive(Clone, Copy, clap::ValueEnum)]
-enum ImportChain {
-    Evm,
-    Sui,
+#[derive(Subcommand)]
+enum KeystoreCommand {
+    /// Generate a signing key.
+    Generate {
+        /// Chain or family the key is for, like `base`, `eip155` or `sui`.
+        #[arg(long)]
+        chain: String,
+    },
+    /// Import a key, prompting when omitted.
+    Import {
+        /// Chain or family the key is for, like `base`, `eip155` or `sui`.
+        #[arg(long)]
+        chain: String,
+        /// Passing a key may expose it in shell history and process listings.
+        #[arg(long)]
+        key: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -126,23 +133,25 @@ async fn main() -> Result<()> {
             .await?;
         }
         Command::Bootstrap => {
-            let report = provision::bootstrap(&cli.config)?;
+            let report = keystore::bootstrap(&cli.config)?;
             println!("evm: {}", report.evm);
             if let Some(address) = report.sui {
                 println!("sui: {address}");
             }
             println!("bootstrap: ok");
         }
-        Command::ImportKey {
-            chain,
-            private_key,
-            force,
-        } => {
-            let address = match chain {
-                ImportChain::Evm => provision::import_evm_key(&cli.config, &private_key, force)?,
-                ImportChain::Sui => provision::import_sui_key(&cli.config, &private_key, force)?,
+        Command::Keystore { action } => {
+            let (family, address) = match action {
+                KeystoreCommand::Generate { chain } => {
+                    let family = ChainFamily::resolve(&chain)?;
+                    (family, keystore::generate(&cli.config, family)?)
+                }
+                KeystoreCommand::Import { chain, key } => {
+                    let family = ChainFamily::resolve(&chain)?;
+                    (family, keystore::import(&cli.config, family, key)?)
+                }
             };
-            println!("{address}");
+            println!("{family}: {address}");
         }
         Command::Health => {
             let config = Config::load(&cli.config)?;
@@ -152,9 +161,14 @@ async fn main() -> Result<()> {
                     config.uniswap.api_key_env
                 );
             }
-            // Opening runs the migrations, so this also proves they apply.
+            // Opening runs migrations; loading validates keys.
             connect_pool(database(&config)).await?;
+            let vault = keystore::load_vault(&config)?;
             println!("config: ok\ndatabase: ok\ntools: ok");
+            println!("evm: {}", vault.address(ChainFamily::Evm)?);
+            if config.sui.enabled {
+                println!("sui: {}", vault.address(ChainFamily::Sui)?);
+            }
         }
         Command::Level { action } => {
             let config = Config::load(&cli.config)?;

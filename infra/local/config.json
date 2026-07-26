@@ -12,9 +12,11 @@
     "api_key_env": "GRAPH_API_KEY",
     "min_pool_tvl_usd": "1000"
   },
+  "keys": {
+    "evm": "/tmp/tempo-agentic-dev/evm.key",
+    "sui": "/tmp/tempo-agentic-dev/sui.key"
+  },
   "evm": {
-    "keystore_path": "/tmp/tempo-agentic-dev/dev-keystore.json",
-    "password_file": "/tmp/tempo-agentic-dev/dev-keystore.password",
     "chains": [
       {
         "name": "ethereum",
@@ -81,7 +83,6 @@
   "sui": {
     "enabled": true,
     "network": "testnet",
-    "rpc_url": "https://fullnode.testnet.sui.io:443",
-    "keystore_path": "/tmp/tempo-agentic-dev/sui/sui.keystore"
+    "rpc_url": "https://fullnode.testnet.sui.io:443"
   }
 }

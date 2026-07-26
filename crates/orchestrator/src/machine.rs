@@ -1,4 +1,4 @@
-use tempo_agentic_domain::{ExecStep, SignedTx};
+use tempo_agentic_domain::ExecStep;
 use tempo_agentic_strategy::{Order, OrderState};
 use thiserror::Error;
 
@@ -8,7 +8,8 @@ pub enum Action {
     /// Build and sign the venue's next transaction.
     Sign,
     Broadcast {
-        signed: SignedTx,
+        signed_tx: String,
+        tx_hash: String,
     },
     CheckReceipt {
         tx_hash: String,
@@ -21,7 +22,8 @@ pub enum Action {
 pub enum Outcome {
     Signed {
         step: ExecStep,
-        signed: SignedTx,
+        signed_tx: String,
+        tx_hash: String,
     },
     Broadcast {
         tx_hash: String,
@@ -77,10 +79,8 @@ pub fn next_action(order: &Order) -> Action {
         OrderState::Broadcasting {
             signed_tx, tx_hash, ..
         } => Action::Broadcast {
-            signed: SignedTx {
-                raw: signed_tx.clone(),
-                hash: tx_hash.clone(),
-            },
+            signed_tx: signed_tx.clone(),
+            tx_hash: tx_hash.clone(),
         },
         OrderState::Submitted { tx_hash, .. } => Action::CheckReceipt {
             tx_hash: tx_hash.clone(),
@@ -107,12 +107,16 @@ pub fn apply(order: &Order, outcome: Outcome) -> Result<Option<OrderState>, Tran
                 withdraw_action_id,
                 ..
             },
-            O::Signed { step, signed },
+            O::Signed {
+                step,
+                signed_tx,
+                tx_hash,
+            },
         ) => S::Broadcasting {
             step,
             amount_in: *amount_in,
-            signed_tx: signed.raw,
-            tx_hash: signed.hash,
+            signed_tx,
+            tx_hash,
             withdraw_action_id: withdraw_action_id.clone(),
         },
         (S::SwapReady { .. }, O::ExecFailed { reason }) => S::Failed {

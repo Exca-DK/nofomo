@@ -8,9 +8,7 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use tempo_agentic_config::{EvmChain, EvmConfig, EvmToken, UniswapConfig};
-use tempo_agentic_domain::{
-    ChainClient, QuoteTradeRequest, ReceiptStatus, SignedTx, TradeVenue, TxContext,
-};
+use tempo_agentic_domain::{EvmNode, QuoteTradeRequest, TradeVenue, TxContext};
 use tempo_agentic_graph::GraphClient;
 use tempo_agentic_uniswap::UniswapVenue;
 
@@ -22,12 +20,9 @@ const CHAIN_ID: u64 = 8453;
 struct FakeChainClient;
 
 #[async_trait]
-impl ChainClient for FakeChainClient {
+impl EvmNode for FakeChainClient {
     fn chain_id(&self) -> u64 {
         CHAIN_ID
-    }
-    async fn tx_context(&self, _from: &str) -> Result<TxContext> {
-        bail!("not used by quote()")
     }
     async fn balance_of(&self, _token: &str, _owner: &str) -> Result<String> {
         Ok("1000000000000000000000".to_string())
@@ -36,12 +31,6 @@ impl ChainClient for FakeChainClient {
         bail!("not used by quote()")
     }
     async fn estimate_gas(&self, _from: &str, _to: &str, _value: &str, _data: &str) -> Result<u64> {
-        bail!("not used by quote()")
-    }
-    async fn broadcast(&self, _signed: &SignedTx) -> Result<String> {
-        bail!("not used by quote()")
-    }
-    async fn confirmation(&self, _tx_hash: &str) -> Result<ReceiptStatus> {
         bail!("not used by quote()")
     }
 }
@@ -67,8 +56,6 @@ async fn venue(mock_uri: &str, key_env: &str) -> UniswapVenue {
         },
     );
     let evm = EvmConfig {
-        keystore_path: String::new(),
-        password_file: String::new(),
         chains: vec![EvmChain {
             name: "base".to_string(),
             chain_id: CHAIN_ID,
@@ -83,7 +70,7 @@ async fn venue(mock_uri: &str, key_env: &str) -> UniswapVenue {
         api_key_env: key_env.to_string(),
         min_pool_tvl_usd: "0".to_string(),
     };
-    let mut chains: HashMap<u64, Arc<dyn ChainClient>> = HashMap::new();
+    let mut chains: HashMap<u64, Arc<dyn EvmNode>> = HashMap::new();
     chains.insert(CHAIN_ID, Arc::new(FakeChainClient));
     // Constructors read `key_env` synchronously.
     temp_env::with_var(key_env, Some("test-key"), || {
@@ -244,7 +231,7 @@ async fn rejects_approval_calldata_to_an_unexpected_spender() {
 
     let venue = venue(&server.uri(), "UNISWAP_TEST_KEY_SPENDER").await;
     let draft = venue.quote(&request()).await.unwrap();
-    let ctx = TxContext {
+    let ctx = TxContext::Evm {
         chain_id: CHAIN_ID,
         nonce: 0,
         max_fee_per_gas: 1,

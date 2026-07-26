@@ -23,11 +23,7 @@ impl Fixture {
         let handler = AdminHandler::new(
             Arc::new(SqliteLevelStore::new(pool.clone())),
             Arc::new(SqliteOrderStore::new(pool)),
-            EvmConfig {
-                keystore_path: "/dev/null".into(),
-                password_file: "/dev/null".into(),
-                chains: Vec::new(),
-            },
+            EvmConfig { chains: Vec::new() },
             500,
             false,
             Arc::new(DexPaprikaSource::new("https://example.invalid")),

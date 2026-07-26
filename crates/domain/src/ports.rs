@@ -2,17 +2,17 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::{
-    ExecuteTradeRequest, ExecutionView, MarketResearch, MarketResearchRequest, QuoteTradeRequest,
-    QuoteView, SignedTx, UnsignedTx,
+    ChainFamily, ExecuteTradeRequest, ExecutionView, MarketResearch, MarketResearchRequest,
+    QuoteTradeRequest, QuoteView, SignedTx, UnsignedTx,
 };
 
-/// Signing port. Key material never leaves the implementation.
+/// Offline signer that keeps key material internal.
 #[async_trait]
 pub trait Signer: Send + Sync {
-    /// The address this signer controls, 0x-prefixed.
-    fn address(&self) -> &str;
+    /// Returns the family's address, or errors if no key is configured.
+    fn address(&self, family: ChainFamily) -> Result<&str>;
 
-    /// Signs a valid transaction offline and returns its future hash.
+    /// Signs offline with the key selected by the transaction variant.
     async fn sign(&self, tx: &UnsignedTx) -> Result<SignedTx>;
 }
 

@@ -34,16 +34,11 @@ pub trait TradeVenue: Send + Sync {
     /// The steps this plan still requires, in execution order.
     async fn steps(&self, plan: &ExecutionPlan) -> Result<Vec<ExecStep>>;
 
-    /// Builds and validates one unsigned transaction.
+    /// Builds one step with the same chain family as `ctx`.
     async fn build(
         &self,
         plan: &ExecutionPlan,
         step: ExecStep,
         ctx: &TxContext,
     ) -> Result<UnsignedTx>;
-
-    /// Executes the plan monolithically. Used by non-EVM venues.
-    async fn execute(&self, _plan: &ExecutionPlan) -> Result<Vec<crate::TransactionReference>> {
-        anyhow::bail!("monolithic execution is not supported by this venue");
-    }
 }

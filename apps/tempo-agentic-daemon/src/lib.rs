@@ -1,5 +1,5 @@
+pub mod keystore;
 pub mod logging;
-pub mod provision;
 pub mod wiring;
 
 use std::path::{Path, PathBuf};

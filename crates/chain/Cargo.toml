@@ -9,7 +9,9 @@ license.workspace = true
 alloy = { version = "1.6.3", features = ["full", "provider-http"] }
 anyhow.workspace = true
 async-trait.workspace = true
+sui-rpc.workspace = true
 tempo-agentic-domain.workspace = true
+tonic = { version = "0.14", default-features = false }
 tracing.workspace = true
 
 [lints]

@@ -38,8 +38,6 @@ fn chain(name: &str, chain_id: u64, tokens: &[(&str, &str, u8)]) -> EvmChain {
 
 fn resolver() -> TokenResolver {
     TokenResolver::from_config(&EvmConfig {
-        keystore_path: "/dev/null".to_string(),
-        password_file: "/dev/null".to_string(),
         chains: vec![
             chain(
                 "base",

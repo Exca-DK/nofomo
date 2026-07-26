@@ -121,8 +121,6 @@ impl Fixture {
 
 fn resolver() -> TokenResolver {
     TokenResolver::from_config(&EvmConfig {
-        keystore_path: "/dev/null".into(),
-        password_file: "/dev/null".into(),
         chains: vec![EvmChain {
             name: "base".into(),
             chain_id: BASE_ID,

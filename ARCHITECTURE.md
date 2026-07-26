@@ -22,9 +22,13 @@ TradeVenue::build  -> UnsignedTx
 
 `ChainClient` handles node communication for execution, context, broadcasting, and confirmation. `Signer` turns an `UnsignedTx` into a `SignedTx`.
 
-Venues may read chain state directly through an RPC client. Only the chain client broadcasts, and only the signer signs.
+Venues may read chain state directly through an RPC client. Only the chain client broadcasts, and only the signer signs. No venue ever reads a key file.
 
-`ChainId` is family-tagged (`Evm(u64)` or `Sui`). `TxContext`, `UnsignedTx`, and `SignedTx` are family-tagged enums so one execution loop drives every venue.
+`TxContext`, `UnsignedTx`, and `SignedTx` are family-tagged enums, so one execution loop drives every venue. The transaction's variant picks the key, and a venue must build the family its `TxContext` carries. `crates/vault` holds one key per `ChainFamily` and is the only place key material lives; everything downstream sees `Arc<dyn Signer>`.
+
+A plan names its own chain through `ExecutionPlan::chain`, and `ExecDeps` keys its node clients by that `ChainId`, so routing never guesses. `ChainClient` stays family-neutral; reads only EVM venues need (`balance_of`, `allowance`, `estimate_gas`) live on `EvmNode` instead, so no other family is asked questions its chain has no notion of.
+
+An order persists one signed-transaction string. EVM stores raw EIP-2718 bytes; Sui keeps its signature detached from the transaction, so it stores both together and rebuilds them on the way back. Either way a restart rebroadcasts the identical transaction under the digest it already recorded.
 
 ## Execution and order state
 

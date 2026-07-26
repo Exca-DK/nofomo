@@ -3,22 +3,20 @@ pub mod pool;
 pub mod swap_math;
 
 use std::str::FromStr;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use constants::NetworkConstants;
-use sui_crypto::SuiSigner;
-use sui_crypto::simple::SimpleKeypair;
 use sui_rpc::Client;
 use sui_rpc::field::{FieldMask, FieldMaskUtil};
-use sui_rpc::proto::sui::rpc::v2::{
-    ExecuteTransactionRequest, GetObjectRequest, ListOwnedObjectsRequest,
-};
+use sui_rpc::proto::sui::rpc::v2::{GetObjectRequest, ListOwnedObjectsRequest};
 use sui_sdk_types::{Address, TypeTag};
 use sui_transaction_builder::{Function, ObjectInput, TransactionBuilder};
 use tempo_agentic_config::SuiConfig;
 use tempo_agentic_domain::{
-    ExecutionPlan, QuoteDraft, QuoteTradeRequest, TradeVenue, TransactionReference,
+    ChainFamily, ExecStep, ExecutionPlan, QuoteDraft, QuoteTradeRequest, Signer, TradeVenue,
+    TxContext, UnsignedTx,
 };
 const CLOCK_OBJECT_ID: &str = "0x6";
 const MAX_TICKS_FETCHED: usize = 20_000;
@@ -27,19 +25,15 @@ const MAX_TICKS_FETCHED: usize = 20_000;
 pub struct CetusVenue {
     rpc_url: String,
     constants: NetworkConstants,
-    keystore_path: String,
+    signer: Arc<dyn Signer>,
 }
 
 impl CetusVenue {
-    pub fn new(config: &SuiConfig) -> Result<Self> {
-        let keystore_path = config
-            .keystore_path
-            .clone()
-            .context("sui.keystore_path is required to run the Cetus venue")?;
+    pub fn new(config: &SuiConfig, signer: Arc<dyn Signer>) -> Result<Self> {
         Ok(Self {
             rpc_url: config.rpc_url.clone(),
             constants: constants::for_network(config.network)?,
-            keystore_path,
+            signer,
         })
     }
 
@@ -47,14 +41,10 @@ impl CetusVenue {
         Client::new(self.rpc_url.as_str()).context("failed to build Sui RPC client")
     }
 
-    fn load_signer(&self) -> Result<SimpleKeypair> {
-        let content = std::fs::read_to_string(&self.keystore_path)
-            .with_context(|| format!("cannot read Sui keystore {}", self.keystore_path))?;
-        let keys: Vec<String> =
-            serde_json::from_str(&content).context("invalid JSON in Sui keystore")?;
-        keys.iter()
-            .find_map(|key| SimpleKeypair::from_base64(key).ok())
-            .context("Sui keystore contains no usable keypair")
+    fn sender(&self) -> Result<Address> {
+        let address = self.signer.address(ChainFamily::Sui)?;
+        Address::from_str(address)
+            .with_context(|| format!("the vault's Sui address is unusable: {address}"))
     }
 
     async fn candidate(
@@ -196,20 +186,17 @@ impl TradeVenue for CetusVenue {
         self.candidate(&mut client, request).await
     }
 
-    async fn steps(&self, _plan: &ExecutionPlan) -> Result<Vec<tempo_agentic_domain::ExecStep>> {
-        bail!("Cetus does not support stepped execution");
+    async fn steps(&self, _plan: &ExecutionPlan) -> Result<Vec<ExecStep>> {
+        // Sui swaps need no allowance step.
+        Ok(vec![ExecStep::Swap])
     }
 
     async fn build(
         &self,
-        _plan: &ExecutionPlan,
-        _step: tempo_agentic_domain::ExecStep,
-        _ctx: &tempo_agentic_domain::TxContext,
-    ) -> Result<tempo_agentic_domain::UnsignedTx> {
-        bail!("Cetus does not support transaction building via TxContext");
-    }
-
-    async fn execute(&self, plan: &ExecutionPlan) -> Result<Vec<TransactionReference>> {
+        plan: &ExecutionPlan,
+        step: ExecStep,
+        ctx: &TxContext,
+    ) -> Result<UnsignedTx> {
         let ExecutionPlan::Cetus {
             pool_id,
             a2b,
@@ -219,22 +206,35 @@ impl TradeVenue for CetusVenue {
         else {
             bail!("Cetus received a Uniswap execution plan");
         };
+        if step != ExecStep::Swap {
+            bail!(
+                "Cetus plans only ever have a swap step, not {}",
+                step.as_str()
+            );
+        }
+        let TxContext::Sui {
+            gas_price,
+            gas_budget,
+        } = ctx
+        else {
+            bail!("Cetus needs Sui chain state, not another family's");
+        };
 
         let mut client = self.client()?;
         let (state, _) = pool::fetch_pool_state(&mut client, pool_id).await?;
-        let _ = state; // Pool existence and pause state are already validated.
+        let _ = state; // Validates existence and pause state.
 
-        let signer = self.load_signer()?;
-        let sender = signer.verifying_key().derive_address();
-        let sender_address = Address::from_str(&sender.to_string())
-            .context("failed to parse derived Sui address")?;
+        let sender_address = self.sender()?;
 
-        // Trust the quoted pool ID, then re-read its coin types on chain.
+        // Re-read coin types from the quoted pool.
         let discovered_pool = pool_id.clone();
         let (coin_type_a, coin_type_b) = pool_coin_types(&mut client, &discovered_pool).await?;
 
         let mut builder = TransactionBuilder::new();
         builder.set_sender(sender_address);
+        // Pin gas for identical rebroadcasts.
+        builder.set_gas_price(*gas_price);
+        builder.set_gas_budget(*gas_budget);
 
         let (coin_a_arg, coin_b_arg) = if *a2b {
             let coin_a = self
@@ -327,41 +327,7 @@ impl TradeVenue for CetusVenue {
             .build(&mut client)
             .await
             .context("failed to build Cetus swap transaction")?;
-        let signature = signer
-            .sign_transaction(&transaction)
-            .map_err(|error| anyhow::anyhow!("failed to sign Cetus swap transaction: {error}"))?;
-
-        let mut request = ExecuteTransactionRequest::default();
-        request.transaction = Some(transaction.clone().into());
-        request.signatures = vec![signature.into()];
-        request.read_mask = Some(FieldMask::from_paths(["digest", "effects.status"]));
-
-        let response = client
-            .execute_transaction_and_wait_for_checkpoint(
-                request,
-                std::time::Duration::from_secs(30),
-            )
-            .await
-            .map_err(|error| anyhow::anyhow!("failed to execute Cetus swap transaction: {error}"))?
-            .into_inner();
-
-        let executed = response
-            .transaction
-            .context("Cetus swap execution response had no transaction")?;
-        let success = executed
-            .effects
-            .as_ref()
-            .and_then(|effects| effects.status.as_ref())
-            .and_then(|status| status.success)
-            .unwrap_or(false);
-        if !success {
-            bail!("Cetus swap transaction reverted");
-        }
-
-        Ok(vec![TransactionReference {
-            kind: "sui_digest".into(),
-            id: executed.digest.unwrap_or_default(),
-        }])
+        Ok(UnsignedTx::Sui(Box::new(transaction)))
     }
 }
 
