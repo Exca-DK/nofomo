@@ -1,6 +1,6 @@
 /target
 # Keep unanchored to cover infra/local/.env.
-.env
+*.env
 .env.*
 !.env.example
 /config.json

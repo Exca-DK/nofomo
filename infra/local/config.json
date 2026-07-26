@@ -30,7 +30,8 @@
           },
           "USDC": {
             "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-            "decimals": 6
+            "decimals": 6,
+            "usd_peg": true
           }
         }
       },
@@ -46,11 +47,13 @@
           },
           "USDC": {
             "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-            "decimals": 6
+            "decimals": 6,
+            "usd_peg": true
           },
           "USDT": {
             "address": "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2",
-            "decimals": 6
+            "decimals": 6,
+            "usd_peg": true
           }
         }
       },
@@ -66,7 +69,8 @@
           },
           "USDC": {
             "address": "0x078D782b760474a361dDA0AF3839290b0EF57AD6",
-            "decimals": 6
+            "decimals": 6,
+            "usd_peg": true
           }
         }
       },
@@ -82,7 +86,8 @@
           },
           "USDG": {
             "address": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
-            "decimals": 6
+            "decimals": 6,
+            "usd_peg": true
           },
           "AAPL": {
             "address": "0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9",
@@ -94,6 +99,10 @@
           },
           "NVDA": {
             "address": "0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC",
+            "decimals": 18
+          },
+          "CASHCAT": {
+            "address": "0x020bFC650A365f8bB26819DEaAbF3e21291018b4",
             "decimals": 18
           }
         }
@@ -123,8 +132,10 @@
         "price_ref": {
           "chain_id": 1,
           "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
-        }
+        },
+        "usd_peg": true
       }
     }
-  }
+  },
+  "max_quote_deviation_bps": 500
 }

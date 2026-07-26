@@ -51,8 +51,9 @@ CREATE TABLE transaction_refs (
     UNIQUE(attempt_id, kind, tx_id)
 );
 
+-- SQLite only implies NOT NULL for INTEGER primary keys, so text ones say it.
 CREATE TABLE strategies (
-    id TEXT PRIMARY KEY,
+    id TEXT NOT NULL PRIMARY KEY,
     venue TEXT NOT NULL,
     chain TEXT NOT NULL,
     base_token TEXT NOT NULL,
@@ -63,7 +64,7 @@ CREATE TABLE strategies (
 
 -- U256 token amounts use decimal TEXT because SQLite lacks 78-digit integers.
 CREATE TABLE levels (
-    id TEXT PRIMARY KEY,
+    id TEXT NOT NULL PRIMARY KEY,
     strategy_id TEXT NOT NULL REFERENCES strategies(id),
     side TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
     trigger_price_usd REAL NOT NULL,
@@ -75,7 +76,7 @@ CREATE TABLE levels (
 
 -- Orders retain the complete execution market even if authoring data later changes.
 CREATE TABLE orders (
-    id TEXT PRIMARY KEY,
+    id TEXT NOT NULL PRIMARY KEY,
     level_id TEXT NOT NULL REFERENCES levels(id),
     venue TEXT NOT NULL,
     chain TEXT NOT NULL,

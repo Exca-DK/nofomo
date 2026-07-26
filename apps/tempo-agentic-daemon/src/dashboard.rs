@@ -17,9 +17,11 @@ use ratatui::widgets::{
     Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Sparkline, Table,
 };
 use ratatui::{Frame, text::Line};
-use reqwest::{Client, StatusCode, Url};
+use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use tempo_agentic_mcp::manifest_path;
+
+use crate::admin_client::Endpoint;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(2);
@@ -154,31 +156,7 @@ fn default_database_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/tmp/tempo-agentic.db"))
 }
 
-#[derive(Clone, Debug, Deserialize)]
-struct Endpoint {
-    url: Url,
-    token: String,
-}
-
 impl Endpoint {
-    fn read(path: &Path) -> Result<Self> {
-        let endpoint: Self = serde_json::from_slice(
-            &std::fs::read(path)
-                .with_context(|| format!("cannot read admin manifest {}", path.display()))?,
-        )
-        .with_context(|| format!("invalid admin manifest {}", path.display()))?;
-        if endpoint.url.scheme() != "http"
-            || !endpoint
-                .url
-                .host_str()
-                .is_some_and(|host| matches!(host, "127.0.0.1" | "::1"))
-            || endpoint.token.is_empty()
-        {
-            bail!("admin manifest is not a valid loopback endpoint");
-        }
-        Ok(endpoint)
-    }
-
     async fn fetch(&self, http: &Client) -> Result<DashboardSnapshot> {
         let response = http
             .get(self.url.join("dashboard")?)

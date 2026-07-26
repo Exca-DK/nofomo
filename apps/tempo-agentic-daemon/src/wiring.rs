@@ -78,6 +78,7 @@ pub fn build(
             venues,
             resolver: tokens,
             runtime,
+            max_quote_deviation_bps: config.max_quote_deviation_bps,
         },
     })
 }

@@ -120,6 +120,7 @@ impl Fixture {
             })],
             resolver: std::sync::Arc::new(resolver()),
             runtime: runtime.clone(),
+            max_quote_deviation_bps: 500,
         };
         (
             Self {
@@ -167,6 +168,7 @@ fn resolver() -> TokenResolver {
                         EvmToken {
                             address: WETH.into(),
                             decimals: 18,
+                            usd_peg: false,
                         },
                     ),
                     (
@@ -174,6 +176,7 @@ fn resolver() -> TokenResolver {
                         EvmToken {
                             address: USDC.into(),
                             decimals: 6,
+                            usd_peg: false,
                         },
                     ),
                 ]),

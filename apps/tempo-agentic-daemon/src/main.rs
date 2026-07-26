@@ -3,9 +3,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
+use serde_json::json;
 use tempo_agentic_config::Config;
+use tempo_agentic_daemon::admin_client::AdminClient;
 use tempo_agentic_daemon::{Options, dashboard, deps, keystore, run};
 use tempo_agentic_domain::{ChainFamily, Signer};
+use tempo_agentic_mcp::manifest_path;
 use tempo_agentic_orchestrator::resolve_quarantine;
 use tempo_agentic_storage::{
     LockFile, SqliteLevelStore, SqliteOrderStore, SqliteStrategyStore, connect_pool,
@@ -221,20 +224,26 @@ async fn main() -> Result<()> {
                 let config = Config::load(&cli.config)?;
                 strategy_list(&config).await?;
             }
-            StrategyCommand::Add(args) => {
-                let (config, _lock) = offline_authoring_config(&cli.config)?;
-                strategy_add(&config, args).await?;
-            }
+            StrategyCommand::Add(args) => match authoring(&cli.config)? {
+                Authoring::Offline(config, _lock) => strategy_add(&config, args).await?,
+                Authoring::Daemon(client) => {
+                    let draft = StrategyDraft::from(args);
+                    client
+                        .call("set_strategy", serde_json::to_value(&draft)?)
+                        .await?;
+                    println!("strategy {}: stored by the running daemon", draft.id);
+                }
+            },
         },
         Command::Level { action } => match action {
             LevelCommand::List => {
                 let config = Config::load(&cli.config)?;
                 level_list(&config).await?;
             }
-            action => {
-                let (config, _lock) = offline_authoring_config(&cli.config)?;
-                level_mutation(&config, action).await?;
-            }
+            action => match authoring(&cli.config)? {
+                Authoring::Offline(config, _lock) => level_mutation(&config, action).await?,
+                Authoring::Daemon(client) => daemon_level_mutation(&client, action).await?,
+            },
         },
         Command::ResolveQuarantine { order_id } => {
             let config = Config::load(&cli.config)?;
@@ -304,6 +313,24 @@ async fn level_mutation(config: &Config, action: LevelCommand) -> Result<()> {
     Ok(())
 }
 
+async fn daemon_level_mutation(client: &AdminClient, action: LevelCommand) -> Result<()> {
+    match action {
+        LevelCommand::Add(args) => {
+            let draft = LevelDraft::from(args);
+            client
+                .call("set_level", serde_json::to_value(&draft)?)
+                .await?;
+            println!("level {}: stored by the running daemon", draft.id);
+        }
+        LevelCommand::Rm { id } => {
+            client.call("delete_level", json!({ "id": id })).await?;
+            println!("level {id}: deleted by the running daemon");
+        }
+        LevelCommand::List => unreachable!("list is handled without an authoring lock"),
+    }
+    Ok(())
+}
+
 async fn level_list(config: &Config) -> Result<()> {
     let levels = SqliteLevelStore::new(open_existing_read_only(database(config)).await?);
     for entry in levels.list_levels().await? {
@@ -329,7 +356,15 @@ struct DatabaseLocator {
     state_db_path: Option<String>,
 }
 
-fn offline_authoring_config(config_path: &str) -> Result<(Config, LockFile)> {
+/// Where an authoring write goes.
+enum Authoring {
+    /// Nothing is trading, so the write goes straight into SQLite.
+    Offline(Box<Config>, LockFile),
+    /// A daemon owns the database and applies the write through its admin tools.
+    Daemon(AdminClient),
+}
+
+fn authoring(config_path: &str) -> Result<Authoring> {
     let raw = std::fs::read_to_string(config_path)
         .with_context(|| format!("cannot read config {config_path}"))?;
     let locator: DatabaseLocator =
@@ -342,16 +377,22 @@ fn offline_authoring_config(config_path: &str) -> Result<(Config, LockFile)> {
         },
         PathBuf::from,
     );
-    let lock = LockFile::acquire(LockFile::path_for(&located)).map_err(|error| {
-        anyhow::anyhow!(
-            "direct CLI authoring is offline-only; when the daemon is running use MCP ({error})"
-        )
-    })?;
-    let config = Config::load(config_path)?;
-    if database(&config) != located {
-        bail!("state_db_path changed while acquiring the authoring lock; retry");
+    match LockFile::acquire(LockFile::path_for(&located)) {
+        Ok(lock) => {
+            let config = Config::load(config_path)?;
+            if database(&config) != located {
+                bail!("state_db_path changed while acquiring the authoring lock; retry");
+            }
+            Ok(Authoring::Offline(Box::new(config), lock))
+        }
+        // Whoever holds the lock is trading, so it owns the config too: hand the
+        // draft to its admin surface instead of reading config from disk again.
+        Err(held) => AdminClient::attach(&manifest_path(&located))
+            .map(Authoring::Daemon)
+            .map_err(|error| {
+                anyhow::anyhow!("{held}; and it publishes no admin surface ({error})")
+            }),
     }
-    Ok((config, lock))
 }
 
 fn database(config: &Config) -> &Path {
@@ -360,24 +401,84 @@ fn database(config: &Config) -> &Path {
 
 #[cfg(test)]
 mod tests {
-    use super::offline_authoring_config;
+    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    use tempo_agentic_mcp::manifest_path;
     use tempo_agentic_storage::LockFile;
 
+    use super::{Authoring, authoring};
+
     #[test]
-    fn daemon_lock_refuses_direct_authoring_before_changed_config_is_used() {
+    fn a_locked_database_with_no_admin_surface_is_refused() {
+        let (database, config) = fixture("no-surface");
+        let lock = LockFile::acquire(LockFile::path_for(&database)).unwrap();
+
+        let error = authoring(config.to_str().unwrap())
+            .err()
+            .expect("a held lock with nothing listening cannot be authored")
+            .to_string();
+
+        assert!(error.contains("another daemon holds"), "{error}");
+        assert!(error.contains("admin surface"), "{error}");
+        // Config drift must never be adopted: the lock decides before it is read.
+        assert!(!error.contains("changed-config-b"), "{error}");
+
+        drop(lock);
+        clean([config]);
+    }
+
+    #[test]
+    fn a_locked_database_is_authored_through_the_daemon_that_holds_it() {
+        let (database, config) = fixture("surface");
+        let lock = LockFile::acquire(LockFile::path_for(&database)).unwrap();
+        let manifest = manifest_path(&database);
+        std::fs::write(
+            &manifest,
+            serde_json::json!({ "url": "http://127.0.0.1:1/", "token": "t" }).to_string(),
+        )
+        .unwrap();
+
+        // The broken config on disk is never loaded on this path.
+        assert!(matches!(
+            authoring(config.to_str().unwrap()).unwrap(),
+            Authoring::Daemon(_)
+        ));
+
+        drop(lock);
+        clean([config, manifest]);
+    }
+
+    #[test]
+    fn an_unlocked_database_takes_the_direct_path() {
+        let (_database, config) = fixture("free");
+
+        // With nothing holding the lock the direct path is chosen, which is the
+        // only one that loads config. The fixture's config is unusable, so that
+        // choice shows up as a config error rather than a daemon one.
+        let error = authoring(config.to_str().unwrap())
+            .err()
+            .expect("the fixture config cannot load")
+            .to_string();
+
+        assert!(!error.contains("another daemon holds"), "{error}");
+        assert!(!error.contains("admin surface"), "{error}");
+
+        clean([config]);
+    }
+
+    // The config deliberately names a chain no venue can satisfy, so any test that
+    // reaches configuration loading fails loudly instead of passing by accident.
+    fn fixture(name: &str) -> (PathBuf, PathBuf) {
         let id = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let database = std::env::temp_dir().join(format!(
-            "tempo-agentic-cli-lock-{}-{id}.db",
+            "tempo-agentic-cli-lock-{}-{name}-{id}.db",
             std::process::id()
         ));
         let config = database.with_extension("json");
-        let lock = LockFile::acquire(LockFile::path_for(&database)).unwrap();
-        // The rest deliberately resembles a changed/broken config: the active daemon's lock
-        // must refuse the write before CLI validation can adopt any on-disk config drift.
         std::fs::write(
             &config,
             serde_json::json!({
@@ -387,14 +488,12 @@ mod tests {
             .to_string(),
         )
         .unwrap();
+        (database, config)
+    }
 
-        let error = offline_authoring_config(config.to_str().unwrap())
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("offline-only"));
-        assert!(error.contains("use MCP"));
-
-        drop(lock);
-        let _ = std::fs::remove_file(config);
+    fn clean<const N: usize>(paths: [PathBuf; N]) {
+        for path in paths {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }

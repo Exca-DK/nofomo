@@ -61,6 +61,7 @@ impl Fixture {
                                 EvmToken {
                                     address: "0xbase".into(),
                                     decimals: 18,
+                                    usd_peg: false,
                                 },
                             ),
                             (
@@ -68,6 +69,7 @@ impl Fixture {
                                 EvmToken {
                                     address: "0xquote".into(),
                                     decimals: 6,
+                                    usd_peg: false,
                                 },
                             ),
                         ]),

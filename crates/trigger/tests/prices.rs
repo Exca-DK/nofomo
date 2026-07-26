@@ -159,6 +159,7 @@ fn resolver() -> TokenResolver {
                         EvmToken {
                             address: pair().token_address,
                             decimals: 18,
+                            usd_peg: false,
                         },
                     ),
                     (
@@ -166,6 +167,7 @@ fn resolver() -> TokenResolver {
                         EvmToken {
                             address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913".into(),
                             decimals: 6,
+                            usd_peg: false,
                         },
                     ),
                 ]),

@@ -34,7 +34,11 @@ struct Candidate {
     draft: QuoteDraft,
 }
 
-const PROXY_APPROVAL_ADDRESS: &str = "0x0000000085E102724e78eCd2F45DC9cA239Affad";
+/// The only contract this venue approves and sends swaps to. Uniswap returns it
+/// as the approval spender on every chain, so a response naming anything else is
+/// refused rather than signed. Re-derive it from the `spender` inside
+/// `/check_approval`'s calldata if Uniswap ever moves it.
+const PROXY_APPROVAL_ADDRESS: &str = "0x02E5be68D46DAc0B524905bfF209cf47EE6dB2a9";
 
 impl UniswapVenue {
     pub fn new(
@@ -210,7 +214,9 @@ impl UniswapVenue {
             .http
             .post(format!("{}/{}", self.api_url, endpoint))
             .header("x-api-key", &self.api_key)
-            .header("x-universal-router-version", "2.0")
+            // No router version is pinned on purpose. Asking for one the chain has
+            // no deployment of answers "no quotes available" for every pair, which
+            // is indistinguishable from a market with no liquidity.
             .header("x-permit2-disabled", "true")
             .json(body)
             .send()
@@ -616,7 +622,9 @@ fn validate_approval_calldata(transaction: &Value, expected_spender: &str) -> Re
     }
     let spender = &data[8 + 24..8 + 64];
     if !spender.eq_ignore_ascii_case(expected_spender.trim_start_matches("0x")) {
-        bail!("approval calldata targets an unexpected spender");
+        // Name both: the usual cause is Uniswap moving the contract, and the
+        // addresses are the whole diagnosis.
+        bail!("approval calldata targets 0x{spender}, not the expected {expected_spender}");
     }
     Ok(())
 }

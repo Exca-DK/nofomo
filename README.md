@@ -30,13 +30,15 @@ A strategy owns its market. Every level refers to one with `--strategy-id`: `buy
 
 `bootstrap` and `run` initialize the current schema only when the state database does not exist. There is no schema migration: if an older development database is rejected, remove the exact path named in the error manually and run `bootstrap` or `run` again. The daemon never deletes it for you.
 
-Direct `strategy add`, `level add`, and `level rm` are offline-only. If `run` holds the database lock, they refuse the write and direct authoring to the daemon's MCP tools; list commands remain available.
+`strategy add`, `level add`, and `level rm` write straight into SQLite when nothing holds it. When `run` holds the database lock they call the daemon's own MCP tools instead, so a trading daemon never has to stop to be reconfigured. The daemon validates whatever it is asked to store, so the checks are the same either way.
 
 `dashboard` requires a running daemon. It reconnects through the daemon manifest after connection or authentication failures and renders feed and level states as text (for example `live`, `stale`, `armed`, or `cooldown`). Press `q` or Ctrl-C to detach; trading continues in the daemon.
 
 ### Prices
 
 A price belongs to the asset, not to the chain it sits on — arbitrage keeps them level. EVM tokens are quoted by their own address, while each entry in `sui.coins` names a `price_ref`: the same asset on a chain the feed does index. That is how a testnet coin no feed has ever heard of still gets a price. A coin used only as a strategy's quote leg can omit it, but then it cannot be the base token a strategy is watched on.
+
+Before an order is created, the venue's quote is checked against the price that fired the level and refused if it sits further away than `max_quote_deviation_bps` (5% by default). This catches what slippage cannot: `minimum_amount_out` is derived from the venue's own quote, so a bad route or a manipulated pool produces a self-consistent quote the daemon would otherwise sign. The check values the counter leg in dollars, so it needs `usd_peg: true` on the quote token — mark your stablecoins. An unpegged pair is logged as unchecked rather than silently trusted.
 
 ### Sui
 

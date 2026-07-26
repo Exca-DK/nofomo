@@ -7,6 +7,7 @@ use tempo_agentic_strategy::{LevelStore, Order, OrderStore, StrategyLevel, trade
 use tokio::sync::{Notify, mpsc};
 
 use crate::fired::{cooling_down, fired_levels};
+use crate::quote_guard::check_quote;
 use crate::resolver::TokenResolver;
 use crate::runtime::{RuntimeStatus, now_secs};
 
@@ -19,6 +20,8 @@ pub struct TriggerDeps {
     pub venues: Vec<Arc<dyn TradeVenue>>,
     pub resolver: Arc<TokenResolver>,
     pub runtime: Arc<RuntimeStatus>,
+    /// Maximum quote/feed deviation in basis points.
+    pub max_quote_deviation_bps: u16,
 }
 
 impl TriggerDeps {
@@ -83,6 +86,14 @@ async fn place_order(
 ) -> Result<()> {
     let venue = deps.venue(entry.strategy.venue.as_str())?;
     let draft = venue.quote(&quote_request(entry)?).await?;
+    // Reject quotes that disagree with the triggering price.
+    check_quote(
+        &deps.resolver,
+        entry,
+        &draft,
+        tick,
+        deps.max_quote_deviation_bps,
+    )?;
 
     // A deterministic ID makes tick replays idempotent.
     let id = format!("{}-{}", entry.level.id, tick.published_at);

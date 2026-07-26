@@ -1,6 +1,7 @@
 mod authoring;
 mod fired;
 mod prices;
+mod quote_guard;
 mod resolver;
 mod run;
 mod runtime;
@@ -11,6 +12,7 @@ pub use authoring::{
 };
 pub use fired::{cooling_down, fired_levels, is_spent};
 pub use prices::produce;
+pub use quote_guard::check_quote;
 // Test seams, not contract: they let tests drive one feed and skip the
 // reconcile interval instead of waiting it out.
 #[doc(hidden)]
