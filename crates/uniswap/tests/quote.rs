@@ -242,9 +242,12 @@ async fn rejects_approval_calldata_to_an_unexpected_spender() {
     let error = venue
         .build(&draft.plan, tempo_agentic_domain::ExecStep::Approval, &ctx)
         .await
-        .unwrap_err();
+        .unwrap_err()
+        .to_string();
+    // Both addresses belong in the message: a moved contract is diagnosed from them.
+    assert!(error.contains(wrong_spender), "unexpected error: {error}");
     assert!(
-        error.to_string().contains("unexpected spender"),
+        error.contains("0x02E5be68D46DAc0B524905bfF209cf47EE6dB2a9"),
         "unexpected error: {error}"
     );
 }
@@ -274,5 +277,49 @@ async fn the_quote_request_pins_no_universal_router_version() {
             .map(|value| value.as_bytes()),
         Some("true".as_bytes()),
         "{headers:?}"
+    );
+}
+
+// Pins the approval spender, because a stale one refuses every swap on every
+// chain and looks like a venue problem rather than a constant that moved.
+#[tokio::test]
+async fn accepts_the_approval_spender_uniswap_actually_returns() {
+    const UNISWAP_SPENDER: &str = "02E5be68D46DAc0B524905bfF209cf47EE6dB2a9";
+    let server = MockServer::start().await;
+    mount_quote(&server, valid_quote_response()).await;
+    Mock::given(method("POST"))
+        .and(path("/check_approval"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "approval": {
+                "from": WALLET,
+                "to": TOKEN_IN,
+                "data": format!(
+                    "0x095ea7b3000000000000000000000000{UNISWAP_SPENDER}\
+                     0000000000000000000000000000000000000000000000000000000000000001"
+                ),
+                "chainId": CHAIN_ID,
+                "value": "0"
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let venue = venue(&server.uri(), "UNISWAP_TEST_KEY_LIVE_SPENDER").await;
+    let draft = venue.quote(&request()).await.unwrap();
+    let ctx = TxContext::Evm {
+        chain_id: CHAIN_ID,
+        nonce: 0,
+        max_fee_per_gas: 1,
+        max_priority_fee_per_gas: 1,
+    };
+    // Only the spender is under test here; gas estimation needs a chain client.
+    let error = venue
+        .build(&draft.plan, tempo_agentic_domain::ExecStep::Approval, &ctx)
+        .await
+        .expect_err("the fake chain client cannot estimate gas")
+        .to_string();
+    assert!(
+        !error.contains("spender"),
+        "the spender Uniswap returns must be accepted: {error}"
     );
 }
