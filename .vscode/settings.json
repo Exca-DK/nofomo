@@ -9,5 +9,6 @@
   },
   "rust-analyzer.check.extraEnv": {
     "DATABASE_URL": "sqlite:///tmp/tempo-agentic-sqlx.db"
-  }
+  },
+  "wake.compiler.solc.remappings": []
 }

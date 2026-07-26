@@ -8,8 +8,13 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 rmcp.workspace = true
+schemars.workspace = true
+serde.workspace = true
 tempo-agentic-agent.workspace = true
+tempo-agentic-config.workspace = true
 tempo-agentic-domain.workspace = true
+tempo-agentic-strategy.workspace = true
+tempo-agentic-trigger.workspace = true
 
 [lints]
 workspace = true

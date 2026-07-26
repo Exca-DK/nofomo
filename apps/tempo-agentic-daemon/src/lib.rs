@@ -1,3 +1,4 @@
+pub mod admin;
 pub mod lock;
 pub mod logging;
 pub mod prices;
@@ -9,6 +10,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use tempo_agentic_config::Config;
+use tempo_agentic_mcp::AdminHandler;
 use tempo_agentic_orchestrator::Waker;
 use tempo_agentic_price::{
     DEFAULT_MAX_AGE_SECS, DEFAULT_MAX_MOVE_BPS, FilteredSource, PriceSource,
@@ -19,6 +21,7 @@ use tempo_agentic_strategy::OrderStore;
 use tempo_agentic_trigger::TokenResolver;
 use tokio::sync::mpsc;
 
+use crate::admin::AdminServer;
 use crate::lock::LockFile;
 
 /// How long the execution loop sleeps when nothing wakes it. Orders waiting on a
@@ -84,6 +87,23 @@ pub async fn run(options: Options) -> Result<()> {
         DEFAULT_MAX_AGE_SECS,
         DEFAULT_MAX_MOVE_BPS,
     ));
+
+    let admin = AdminServer::start(
+        AdminHandler::new(
+            levels.clone(),
+            orders.clone(),
+            config.evm.clone(),
+            config.max_slippage_bps,
+            options.allow_broadcast,
+        ),
+        &database,
+    )
+    .await?;
+    tracing::info!(
+        url = %admin.url,
+        manifest = %admin::manifest_path(&database).display(),
+        "admin MCP surface listening; the manifest holds the bearer token"
+    );
 
     let (ticks_tx, ticks_rx) = mpsc::channel(TICK_CHANNEL);
     let waker = Arc::new(Waker::default());

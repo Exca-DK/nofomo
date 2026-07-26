@@ -9,10 +9,17 @@ license.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 futures.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+rand.workspace = true
+rmcp.workspace = true
+serde_json.workspace = true
 tempo-agentic-chain.workspace = true
 tempo-agentic-config.workspace = true
 tempo-agentic-domain.workspace = true
 tempo-agentic-graph.workspace = true
+tempo-agentic-mcp.workspace = true
 tempo-agentic-orchestrator.workspace = true
 tempo-agentic-price.workspace = true
 tempo-agentic-price-dexpaprika.workspace = true
@@ -28,6 +35,7 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 reqwest.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true
