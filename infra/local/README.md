@@ -5,8 +5,9 @@ Robinhood Chain. Five buy levels below the current price and five above it, each
 worth one dollar, spaced 0.5% apart.
 
 Every command below is either a CLI subcommand or an MCP tool. There is
-deliberately no script: authoring belongs to the agent through MCP, and a shell
-wrapper would route around that contract.
+deliberately no script in the repo: authoring belongs to the agent through MCP,
+and a committed wrapper would route around that contract. The shell below is
+here to read prices and do arithmetic, not to author anything by itself.
 
 ## 1. Secrets
 
@@ -34,55 +35,50 @@ each leg, plus gas:
 | Base | 5 USDC and ~0.0026 WETH |
 | Robinhood | 5 USDG and ~101 CASHCAT |
 
-## 3. Levels are priced off the live market
+## 3. The grid is priced when you create it
 
-A grid is centred on the price at the moment you create it, so read the price
-first and put the levels around it. The daemon watches the **base token**, so
-that is the one to price:
+No price is written down here. A grid is centred on the market at the moment you
+create it, so both blocks below read the base token's price first and place the
+levels around whatever comes back. The daemon watches the **base token**, so
+that is the one to price.
+
+Paste these two helpers into the shell first:
 
 ```bash
-curl -s -H 'User-Agent: nofomo' \
-  https://api.dexpaprika.com/networks/base/tokens/0x4200000000000000000000000000000000000006 \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["summary"]["price_usd"])'
-```
+# Spot price of one token in dollars. DexPaprika refuses a request without a User-Agent.
+price() {
+  curl -fsS -H 'User-Agent: nofomo' \
+      "https://api.dexpaprika.com/networks/$1/tokens/$2" |
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["summary"]["price_usd"])'
+}
 
-For each level `i` in 1..5, at a step of 0.5%:
-
-```
-buy  trigger = price * (1 - 0.005 * i)     amount = 1          (spends the quote token, a dollar each)
-sell trigger = price * (1 + 0.005 * i)     amount = 1 / trigger (spends one dollar of the base token)
+# One rung of the grid: prints "<buy trigger> <sell trigger> <sell amount>".
+# A buy spends one dollar of the quote token, so its amount is just 1.
+# A sell spends one dollar of the base token, which is 1 / its trigger price.
+grid() {
+  python3 -c 'import sys
+price, step, i = float(sys.argv[1]), float(sys.argv[2]), int(sys.argv[3])
+buy, sell = price * (1 - step * i), price * (1 + step * i)
+print(f"{buy:.8f} {sell:.8f} {1 / sell:.9f}")' "$1" "$2" "$3"
+}
 ```
 
 ## 4. Base — ETH/USDC
 
-Values below assume a WETH price of **1885.53 USD**. Substitute the price you
-just read; a grid built on a stale price is centred in the wrong place.
-
 ```bash
+eth=$(price base 0x4200000000000000000000000000000000000006)
+echo "WETH: $eth USD"
+
 tempo-agentic-daemon strategy add --id base-eth --chain base \
     --base-token WETH --quote-token USDC
 
-tempo-agentic-daemon level add --id base-eth-buy-1 --strategy-id base-eth --side buy \
-    --trigger-price-usd 1876.100 --amount 1 --slippage-bps 100
-tempo-agentic-daemon level add --id base-eth-buy-2 --strategy-id base-eth --side buy \
-    --trigger-price-usd 1866.672 --amount 1 --slippage-bps 100
-tempo-agentic-daemon level add --id base-eth-buy-3 --strategy-id base-eth --side buy \
-    --trigger-price-usd 1857.245 --amount 1 --slippage-bps 100
-tempo-agentic-daemon level add --id base-eth-buy-4 --strategy-id base-eth --side buy \
-    --trigger-price-usd 1847.817 --amount 1 --slippage-bps 100
-tempo-agentic-daemon level add --id base-eth-buy-5 --strategy-id base-eth --side buy \
-    --trigger-price-usd 1838.390 --amount 1 --slippage-bps 100
-
-tempo-agentic-daemon level add --id base-eth-sell-1 --strategy-id base-eth --side sell \
-    --trigger-price-usd 1894.955 --amount 0.000527717 --slippage-bps 100
-tempo-agentic-daemon level add --id base-eth-sell-2 --strategy-id base-eth --side sell \
-    --trigger-price-usd 1904.383 --amount 0.000525105 --slippage-bps 100
-tempo-agentic-daemon level add --id base-eth-sell-3 --strategy-id base-eth --side sell \
-    --trigger-price-usd 1913.811 --amount 0.000522518 --slippage-bps 100
-tempo-agentic-daemon level add --id base-eth-sell-4 --strategy-id base-eth --side sell \
-    --trigger-price-usd 1923.238 --amount 0.000519956 --slippage-bps 100
-tempo-agentic-daemon level add --id base-eth-sell-5 --strategy-id base-eth --side sell \
-    --trigger-price-usd 1932.666 --amount 0.000517420 --slippage-bps 100
+for i in 1 2 3 4 5; do
+  read -r buy sell size <<<"$(grid "$eth" 0.005 "$i")"
+  tempo-agentic-daemon level add --id "base-eth-buy-$i" --strategy-id base-eth \
+      --side buy --trigger-price-usd "$buy" --amount 1 --slippage-bps 100
+  tempo-agentic-daemon level add --id "base-eth-sell-$i" --strategy-id base-eth \
+      --side sell --trigger-price-usd "$sell" --amount "$size" --slippage-bps 100
+done
 ```
 
 ## 5. Robinhood — CASHCAT/USDG
@@ -92,35 +88,20 @@ and TSLA are priced but have no liquidity to quote against. CASHCAT was picked
 instead for its movement: 620k USD of pool liquidity, ~16% daily range, and a
 USDG pair, which is what lets the quote check run at all.
 
-Read its price the same way, from
-`https://api.dexpaprika.com/networks/robinhood/tokens/0x020bFC650A365f8bB26819DEaAbF3e21291018b4`.
-Values below assume **0.048786 USD**.
-
 ```bash
+cat=$(price robinhood 0x020bFC650A365f8bB26819DEaAbF3e21291018b4)
+echo "CASHCAT: $cat USD"
+
 tempo-agentic-daemon strategy add --id rh-cashcat --chain robinhood \
     --base-token CASHCAT --quote-token USDG
 
-tempo-agentic-daemon level add --id rh-cashcat-buy-1 --strategy-id rh-cashcat --side buy \
-    --trigger-price-usd 0.048542 --amount 1 --slippage-bps 100
-tempo-agentic-daemon level add --id rh-cashcat-buy-2 --strategy-id rh-cashcat --side buy \
-    --trigger-price-usd 0.048298 --amount 1 --slippage-bps 100
-tempo-agentic-daemon level add --id rh-cashcat-buy-3 --strategy-id rh-cashcat --side buy \
-    --trigger-price-usd 0.048054 --amount 1 --slippage-bps 100
-tempo-agentic-daemon level add --id rh-cashcat-buy-4 --strategy-id rh-cashcat --side buy \
-    --trigger-price-usd 0.047810 --amount 1 --slippage-bps 100
-tempo-agentic-daemon level add --id rh-cashcat-buy-5 --strategy-id rh-cashcat --side buy \
-    --trigger-price-usd 0.047566 --amount 1 --slippage-bps 100
-
-tempo-agentic-daemon level add --id rh-cashcat-sell-1 --strategy-id rh-cashcat --side sell \
-    --trigger-price-usd 0.049030 --amount 20.395834 --slippage-bps 100
-tempo-agentic-daemon level add --id rh-cashcat-sell-2 --strategy-id rh-cashcat --side sell \
-    --trigger-price-usd 0.049274 --amount 20.294864 --slippage-bps 100
-tempo-agentic-daemon level add --id rh-cashcat-sell-3 --strategy-id rh-cashcat --side sell \
-    --trigger-price-usd 0.049518 --amount 20.194890 --slippage-bps 100
-tempo-agentic-daemon level add --id rh-cashcat-sell-4 --strategy-id rh-cashcat --side sell \
-    --trigger-price-usd 0.049762 --amount 20.095895 --slippage-bps 100
-tempo-agentic-daemon level add --id rh-cashcat-sell-5 --strategy-id rh-cashcat --side sell \
-    --trigger-price-usd 0.050006 --amount 19.997866 --slippage-bps 100
+for i in 1 2 3 4 5; do
+  read -r buy sell size <<<"$(grid "$cat" 0.005 "$i")"
+  tempo-agentic-daemon level add --id "rh-cashcat-buy-$i" --strategy-id rh-cashcat \
+      --side buy --trigger-price-usd "$buy" --amount 1 --slippage-bps 100
+  tempo-agentic-daemon level add --id "rh-cashcat-sell-$i" --strategy-id rh-cashcat \
+      --side sell --trigger-price-usd "$sell" --amount "$size" --slippage-bps 100
+done
 ```
 
 ## 6. Run
@@ -138,6 +119,13 @@ anything. Only once that looks right:
 ```bash
 MAINNET_SWAP=1 tempo-agentic-daemon run  # spends real funds
 ```
+
+## Recentring later
+
+Both blocks are keyed by level id, and a write to an existing id replaces it, so
+running a block again reprices the grid around the current market. Two limits:
+the daemon must not be holding the database lock, and a level that already fired
+stays spent — rewriting its trigger does not re-arm it.
 
 ## Authoring through MCP instead
 
