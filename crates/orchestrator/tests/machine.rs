@@ -349,16 +349,24 @@ fn a_zero_attempt_count_still_pauses() {
     assert_eq!(swap_retry_backoff_secs(0), 2);
 }
 
-// A blocked send has no hash to retry and frees the level.
+// A blocked send has no hash to retry and frees the level. What a dry run found
+// is the only thing such a run can report, so it has to reach the stored reason.
 #[test]
 fn a_blocked_broadcast_ends_the_order_without_a_hash() {
     assert_eq!(
-        apply(&order(broadcasting()), Outcome::BroadcastBlocked)
-            .unwrap()
-            .unwrap(),
+        apply(
+            &order(broadcasting()),
+            Outcome::BroadcastBlocked {
+                note: "dry run failed: insufficient gas".into()
+            }
+        )
+        .unwrap()
+        .unwrap(),
         OrderState::Failed {
             tx_hash: None,
-            reason: "broadcast blocked; set MAINNET_SWAP=1 to allow".into(),
+            reason: "broadcast blocked; set MAINNET_SWAP=1 to allow \
+                     (dry run failed: insufficient gas)"
+                .into(),
         }
     );
 }
@@ -367,7 +375,9 @@ fn a_blocked_broadcast_ends_the_order_without_a_hash() {
 fn blocking_something_that_was_not_being_sent_is_rejected() {
     let error = apply(
         &order(swap_ready(ExecStep::Swap)),
-        Outcome::BroadcastBlocked,
+        Outcome::BroadcastBlocked {
+            note: "dry run succeeded".into(),
+        },
     )
     .unwrap_err();
     assert_eq!(error.state, "SwapReady");

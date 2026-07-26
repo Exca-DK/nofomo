@@ -3,6 +3,7 @@ pub mod dashboard;
 pub mod deps;
 pub mod keystore;
 pub mod logging;
+pub mod openclaw;
 pub mod wiring;
 
 use std::collections::BTreeMap;
@@ -12,7 +13,10 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use tempo_agentic_config::Config;
-use tempo_agentic_mcp::{AdminHandler, AdminServer, DashboardDeps, manifest_path};
+use tempo_agentic_graph::GraphClient;
+use tempo_agentic_mcp::{
+    AdminHandler, AdminServer, DashboardDeps, DashboardMarketDeps, manifest_path,
+};
 use tempo_agentic_orchestrator::Waker;
 use tempo_agentic_price::{DEFAULT_MAX_AGE_SECS, PriceSource};
 use tempo_agentic_storage::{
@@ -92,8 +96,10 @@ pub async fn run(options: Options) -> Result<()> {
         options.allow_broadcast,
         DEFAULT_MAX_AGE_SECS,
     ));
+    let graph = GraphClient::new(&config.graph)?;
     let wiring = wiring::build(
         &config,
+        graph.clone(),
         options.allow_broadcast,
         levels.clone(),
         orders.clone(),
@@ -109,6 +115,10 @@ pub async fn run(options: Options) -> Result<()> {
             DashboardDeps {
                 store: strategies,
                 runtime: runtime.clone(),
+                market: Some(DashboardMarketDeps {
+                    graph,
+                    evm: config.evm.clone(),
+                }),
             },
             tokens.clone(),
             config.max_slippage_bps,

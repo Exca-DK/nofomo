@@ -47,6 +47,7 @@ impl Fixture {
             DashboardDeps {
                 store: strategies.clone(),
                 runtime: runtime.clone(),
+                market: None,
             },
             Arc::new(TokenResolver::from_config(
                 &EvmConfig {
@@ -122,6 +123,16 @@ impl Fixture {
         request.send().await.unwrap()
     }
 
+    async fn market(&self, token: Option<&str>, body: serde_json::Value) -> reqwest::Response {
+        let mut request = reqwest::Client::new()
+            .post(format!("{}dashboard/market", self.server.url))
+            .json(&body);
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        request.send().await.unwrap()
+    }
+
     fn cleanup(self) {
         let database = self.database.clone();
         drop(self.server);
@@ -153,12 +164,53 @@ async fn a_request_without_the_token_is_refused() {
         fixture.dashboard(Some("not-the-token")).await.status(),
         reqwest::StatusCode::UNAUTHORIZED
     );
+    assert_eq!(
+        fixture
+            .market(None, json!({"strategy_id": "s-1"}))
+            .await
+            .status(),
+        reqwest::StatusCode::UNAUTHORIZED
+    );
 
     let allowed = fixture.post(Some(&fixture.token.clone())).await;
     assert_eq!(
         allowed,
         reqwest::StatusCode::OK,
         "the authenticated MCP POST must keep its existing route"
+    );
+
+    fixture.cleanup();
+}
+
+#[tokio::test]
+async fn market_endpoint_validates_strategy_and_graph_support() {
+    let fixture = Fixture::start("market-errors").await;
+
+    let malformed = fixture.market(Some(&fixture.token), json!({})).await;
+    assert_eq!(malformed.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    let missing = fixture
+        .market(Some(&fixture.token), json!({"strategy_id": "missing"}))
+        .await;
+    assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+
+    fixture
+        .strategies
+        .upsert_strategy(&strategy())
+        .await
+        .unwrap();
+    let unsupported = fixture
+        .market(Some(&fixture.token), json!({"strategy_id": "s-1"}))
+        .await;
+    assert_eq!(
+        unsupported.status(),
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert!(
+        unsupported.json::<serde_json::Value>().await.unwrap()["error"]
+            .as_str()
+            .unwrap()
+            .contains("not configured")
     );
 
     fixture.cleanup();

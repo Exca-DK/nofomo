@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tempo_agentic_config::Config;
 use tempo_agentic_daemon::admin_client::AdminClient;
-use tempo_agentic_daemon::{Options, dashboard, deps, keystore, run};
+use tempo_agentic_daemon::{Options, dashboard, deps, keystore, openclaw, run};
 use tempo_agentic_domain::{ChainFamily, Signer};
 use tempo_agentic_mcp::manifest_path;
 use tempo_agentic_orchestrator::resolve_quarantine;
@@ -59,6 +59,15 @@ enum Command {
     ResolveQuarantine {
         #[arg(long)]
         order_id: String,
+    },
+    /// Print the OpenClaw MCP entry for the running daemon so an agent can author rules.
+    Openclaw {
+        /// Merge it into the OpenClaw config instead of printing it.
+        #[arg(long)]
+        write: bool,
+        /// Which config to merge into. Defaults to ~/.openclaw/openclaw.json.
+        #[arg(long)]
+        config_path: Option<PathBuf>,
     },
 }
 
@@ -245,6 +254,21 @@ async fn main() -> Result<()> {
                 Authoring::Daemon(client) => daemon_level_mutation(&client, action).await?,
             },
         },
+        Command::Openclaw { write, config_path } => {
+            if write {
+                let target = openclaw::install(&cli.config, config_path)?;
+                println!("openclaw: nofomo added to {}", target.display());
+                println!("the token changes when the daemon restarts, so run this again after one");
+            } else {
+                let entry = openclaw::entry(&cli.config)?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "mcp": { "servers": { "nofomo": entry } }
+                    }))?
+                );
+            }
+        }
         Command::ResolveQuarantine { order_id } => {
             let config = Config::load(&cli.config)?;
             let orders = SqliteOrderStore::new(connect_pool(database(&config)).await?);
