@@ -23,6 +23,12 @@ impl<S> FilteredSource<S> {
 }
 
 impl<S: PriceSource> PriceSource for FilteredSource<S> {
+    // Filtering says nothing about what can be quoted, so this passes straight
+    // through to whoever actually knows.
+    fn supports(&self, pair: &PricePair) -> bool {
+        self.inner.supports(pair)
+    }
+
     fn stream(&self, pair: &PricePair) -> PriceStream {
         let inner = self.inner.stream(pair);
         let max_age_secs = self.max_age_secs;

@@ -86,6 +86,7 @@ fn status_projects_every_state() {
                 amount_in,
                 tx_hash: "0xbeef".into(),
                 withdraw_action_id: None,
+                submitted_at: 0,
             },
             OrderStatus::Submitted,
         ),
@@ -153,7 +154,8 @@ fn only_settled_states_are_terminal() {
             step: ExecStep::Swap,
             amount_in,
             tx_hash: "0xbeef".into(),
-            withdraw_action_id: None
+            withdraw_action_id: None,
+            submitted_at: 0,
         })
         .is_terminal()
     );

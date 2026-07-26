@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use tempo_agentic_config::Config;
 use tempo_agentic_orchestrator::{Outcome, apply};
+use tempo_agentic_price_dexpaprika::DexPaprikaSource;
 use tempo_agentic_storage::{SqliteAuditStore, SqliteLevelStore, SqliteOrderStore};
 use tempo_agentic_strategy::{LevelStore, OrderStore};
 use tempo_agentic_trigger::{LevelDraft, validate_level};
@@ -181,7 +182,9 @@ async fn level_command(
 ) -> Result<()> {
     match action {
         LevelCommand::Add(args) => {
-            let level = validate_level(&config.evm, config.max_slippage_bps, &args.into())?;
+            let prices = DexPaprikaSource::new(&config.dexpaprika_stream_url);
+            let level =
+                validate_level(&config.evm, config.max_slippage_bps, &prices, &args.into())?;
             levels.upsert_level(&level).await?;
             println!("level {}: stored", level.id);
         }

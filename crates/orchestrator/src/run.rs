@@ -1,11 +1,11 @@
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tempo_agentic_strategy::{Order, OrderState, OrderStore};
 use tokio::sync::Notify;
 
-use crate::io::{ExecDeps, perform};
+use crate::io::{ExecDeps, now_unix, perform};
 use crate::machine::{Action, Outcome, apply, next_action, swap_retry_backoff_secs};
 
 /// Transitions one pass may make before yielding. A venue that keeps asking for
@@ -173,11 +173,4 @@ fn announce(order: &Order) {
             );
         }
     }
-}
-
-fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs() as i64)
-        .unwrap_or(0)
 }

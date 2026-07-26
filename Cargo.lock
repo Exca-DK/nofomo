@@ -4919,6 +4919,7 @@ dependencies = [
  "serde_json",
  "tempo-agentic-config",
  "tempo-agentic-orchestrator",
+ "tempo-agentic-price-dexpaprika",
  "tempo-agentic-storage",
  "tempo-agentic-strategy",
  "tempo-agentic-trigger",
@@ -5049,6 +5050,7 @@ dependencies = [
  "tempo-agentic-agent",
  "tempo-agentic-config",
  "tempo-agentic-domain",
+ "tempo-agentic-price",
  "tempo-agentic-strategy",
  "tempo-agentic-trigger",
 ]
@@ -5127,6 +5129,7 @@ dependencies = [
  "alloy-primitives",
  "anyhow",
  "async-trait",
+ "futures",
  "schemars 1.2.1",
  "serde",
  "serde_json",

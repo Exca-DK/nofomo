@@ -13,6 +13,7 @@ serde.workspace = true
 tempo-agentic-agent.workspace = true
 tempo-agentic-config.workspace = true
 tempo-agentic-domain.workspace = true
+tempo-agentic-price.workspace = true
 tempo-agentic-strategy.workspace = true
 tempo-agentic-trigger.workspace = true
 

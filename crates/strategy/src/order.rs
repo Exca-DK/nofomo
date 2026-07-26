@@ -67,6 +67,11 @@ pub enum OrderState {
         amount_in: U256,
         tx_hash: String,
         withdraw_action_id: Option<String>,
+        /// Unix second the transaction went out, so a receipt that never arrives
+        /// can eventually be given up on. Defaulted rather than required, so a
+        /// row written before this field existed reads back as long overdue.
+        #[serde(default)]
+        submitted_at: i64,
     },
     /// The swap filled and the proceeds are being deposited into a lending
     /// position.

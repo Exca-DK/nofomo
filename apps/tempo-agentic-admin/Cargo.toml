@@ -12,6 +12,7 @@ serde_json.workspace = true
 tempo-agentic-config.workspace = true
 tempo-agentic-trigger.workspace = true
 tempo-agentic-orchestrator.workspace = true
+tempo-agentic-price-dexpaprika.workspace = true
 tempo-agentic-storage.workspace = true
 tempo-agentic-strategy.workspace = true
 tempo-agentic-vault.workspace = true

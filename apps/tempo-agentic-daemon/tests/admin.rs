@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tempo_agentic_config::EvmConfig;
 use tempo_agentic_daemon::admin::{AdminServer, manifest_path};
 use tempo_agentic_mcp::AdminHandler;
+use tempo_agentic_price_dexpaprika::DexPaprikaSource;
 use tempo_agentic_storage::{SqliteLevelStore, SqliteOrderStore, connect_pool};
 
 struct Fixture {
@@ -34,6 +35,7 @@ impl Fixture {
             },
             500,
             false,
+            Arc::new(DexPaprikaSource::new("https://example.invalid")),
         );
         let server = AdminServer::start(handler, &database).await.unwrap();
 

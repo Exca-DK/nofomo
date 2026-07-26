@@ -95,6 +95,7 @@ pub async fn run(options: Options) -> Result<()> {
             config.evm.clone(),
             config.max_slippage_bps,
             options.allow_broadcast,
+            source.clone(),
         ),
         &database,
     )

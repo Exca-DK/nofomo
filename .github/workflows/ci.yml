@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch makes the first run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The toolchain comes from rust-toolchain.toml, which already pins the
+      # version and asks for clippy and rustfmt. `sqlite3` is checked here so a
+      # runner image without it says so plainly instead of failing inside make.
+      - name: Show tooling
+        run: rustc --version && cargo --version && sqlite3 --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      # `make check` rebuilds the sqlx validation database from the migrations
+      # first, so every `sqlx::query!` is checked against the schema that ships
+      # rather than against a committed cache that could have drifted.
+      - name: fmt, tests, clippy
+        run: make check

@@ -8,6 +8,7 @@ use rmcp::{Json, ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tempo_agentic_config::EvmConfig;
+use tempo_agentic_price::PriceSource;
 use tempo_agentic_strategy::{Level, LevelStore, Order, OrderStore};
 use tempo_agentic_trigger::{LevelDraft, validate_level};
 
@@ -25,6 +26,9 @@ pub struct AdminHandler {
     evm: EvmConfig,
     max_slippage_bps: u16,
     allow_broadcast: bool,
+    /// Consulted before a rule is stored, so one that nothing could price is
+    /// refused rather than armed and silent.
+    prices: Arc<dyn PriceSource>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -35,6 +39,7 @@ impl AdminHandler {
         evm: EvmConfig,
         max_slippage_bps: u16,
         allow_broadcast: bool,
+        prices: Arc<dyn PriceSource>,
     ) -> Self {
         Self {
             levels,
@@ -42,6 +47,7 @@ impl AdminHandler {
             evm,
             max_slippage_bps,
             allow_broadcast,
+            prices,
             tool_router: Self::tool_router(),
         }
     }
@@ -226,7 +232,13 @@ impl AdminHandler {
         &self,
         Parameters(draft): Parameters<LevelDraft>,
     ) -> Result<Json<LevelView>, McpError> {
-        let level = validate_level(&self.evm, self.max_slippage_bps, &draft).map_err(to_mcp)?;
+        let level = validate_level(
+            &self.evm,
+            self.max_slippage_bps,
+            self.prices.as_ref(),
+            &draft,
+        )
+        .map_err(to_mcp)?;
         self.levels.upsert_level(&level).await.map_err(to_mcp)?;
         Ok(Json(level_view(&level)))
     }
