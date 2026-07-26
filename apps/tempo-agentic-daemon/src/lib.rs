@@ -1,7 +1,9 @@
 pub mod admin;
 pub mod lock;
 pub mod logging;
+pub mod operate;
 pub mod prices;
+pub mod provision;
 pub mod wiring;
 
 use std::path::{Path, PathBuf};

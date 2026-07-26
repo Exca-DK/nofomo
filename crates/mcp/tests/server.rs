@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use tempo_agentic_config::EvmConfig;
 use tempo_agentic_daemon::admin::{AdminServer, manifest_path};
@@ -15,14 +14,13 @@ struct Fixture {
 }
 
 impl Fixture {
-    async fn start() -> Self {
+    // Named after the test rather than stamped with a clock: these run in
+    // parallel in one process, and `SystemTime::now` is coarse enough that they
+    // would otherwise share a database and delete it from under each other.
+    async fn start(name: &str) -> Self {
         let database = std::env::temp_dir().join(format!(
-            "tempo-agentic-daemon-admin-{}-{}.db",
+            "tempo-agentic-daemon-admin-{}-{name}.db",
             std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
         ));
         let pool = connect_pool(&database).await.unwrap();
         let handler = AdminHandler::new(
@@ -80,7 +78,7 @@ impl Fixture {
 // this one, and `set_level` stores rules that spend funds.
 #[tokio::test]
 async fn a_request_without_the_token_is_refused() {
-    let fixture = Fixture::start().await;
+    let fixture = Fixture::start("token").await;
 
     assert_eq!(
         fixture.post(None).await,
@@ -106,7 +104,7 @@ async fn a_request_without_the_token_is_refused() {
 // out a token that no longer opens anything.
 #[tokio::test]
 async fn stopping_the_server_takes_the_manifest_with_it() {
-    let fixture = Fixture::start().await;
+    let fixture = Fixture::start("manifest").await;
     let manifest = manifest_path(&fixture.database);
     assert!(manifest.exists());
 

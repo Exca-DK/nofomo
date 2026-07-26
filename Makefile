@@ -13,7 +13,7 @@ endef
 # something nobody ships.
 export DATABASE_URL = sqlite://$(SQLX_DEV_DB)
 
-.PHONY: schema check build bootstrap run health integrate prepare require-env docker-build docker-run help
+.PHONY: schema check build bootstrap run health prepare require-env docker-build docker-run help
 
 # $(ENV_LOCAL) is no longer committed, so a fresh clone has to be told what to
 # copy. Listed first among the prerequisites so it fails in a second rather than
@@ -52,16 +52,13 @@ build: schema
 	cargo build --workspace --release
 
 bootstrap: require-env build
-	$(load_env) ./target/release/tempo-agentic-admin bootstrap
+	$(load_env) ./target/release/tempo-agentic-daemon bootstrap
 
 run: require-env build bootstrap
-	$(load_env) ./target/release/tempo-agentic
+	$(load_env) ./target/release/tempo-agentic-daemon run
 
 health: require-env build bootstrap
-	$(load_env) ./target/release/tempo-agentic-admin health
-
-integrate: require-env build
-	$(load_env) ./target/release/tempo-agentic-admin integrate-openclaw
+	$(load_env) ./target/release/tempo-agentic-daemon health
 
 help:
 	@grep -E '^[a-zA-Z0-9_-]+:' Makefile \

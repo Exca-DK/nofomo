@@ -56,9 +56,12 @@ pub struct EvmChain {
     pub name: String,
     pub chain_id: u64,
     pub rpc_url: String,
-    /// The Graph subgraph ID for this chain's Uniswap pools. Empty when the
-    /// chain has no indexed subgraph, in which case the research guard is
-    /// skipped and the Uniswap quote validation is the only safety check.
+    /// The Graph subgraph ID for this chain's Uniswap pools.
+    ///
+    /// Leaving it empty does **not** skip the liquidity guard — it makes the
+    /// guard find no pools, which fails every quote on this chain
+    /// (`GraphClient::research`). A chain without a real subgraph ID can be
+    /// configured, but nothing will ever trade on it.
     #[serde(default)]
     pub graph_subgraph_id: String,
     pub tokens: HashMap<String, EvmToken>,
