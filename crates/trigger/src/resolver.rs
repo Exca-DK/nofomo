@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use tempo_agentic_config::{EvmConfig, SuiConfig};
 use tempo_agentic_domain::{ChainId, normalize_coin_type};
 use tempo_agentic_price::PricePair;
-use tempo_agentic_strategy::{Level, base_token};
+use tempo_agentic_strategy::Strategy;
 
 pub const SUI_CHAIN_NAME: &str = "sui";
 
@@ -76,8 +76,12 @@ impl TokenResolver {
             .get(&lookup_key(name))
     }
 
-    pub fn price_pair(&self, level: &Level) -> Option<PricePair> {
-        self.token(&level.chain, base_token(level))?
+    /// Resolves the strategy's priced pair, or `None` if it cannot be priced.
+    ///
+    /// A strategy is watched on its base token, so that is the only leg that
+    /// needs a price; the quote leg may be a coin no feed quotes.
+    pub fn price_pair(&self, strategy: &Strategy) -> Option<PricePair> {
+        self.token(&strategy.chain, &strategy.base_token)?
             .price_ref
             .clone()
     }

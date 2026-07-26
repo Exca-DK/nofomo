@@ -3,11 +3,16 @@ use serde_json::json;
 use std::path::PathBuf;
 use tempo_agentic_domain::{ExecutionPlan, VenueName};
 use tempo_agentic_orchestrator::resolve_quarantine;
-use tempo_agentic_storage::{SqliteLevelStore, SqliteOrderStore, connect_pool};
-use tempo_agentic_strategy::{Level, LevelStore, Order, OrderState, OrderStore, Side};
+use tempo_agentic_storage::{
+    LockFile, SqliteLevelStore, SqliteOrderStore, SqliteStrategyStore, initialize_new_under_lock,
+};
+use tempo_agentic_strategy::{
+    Level, LevelStore, Order, OrderState, OrderStore, Side, Strategy, StrategyLevel, StrategyStore,
+};
 use tempo_agentic_trigger::is_spent;
 
 struct Fixture {
+    strategies: SqliteStrategyStore,
     levels: SqliteLevelStore,
     orders: SqliteOrderStore,
     database: PathBuf,
@@ -20,8 +25,10 @@ impl Fixture {
             "tempo-agentic-orchestrator-quarantine-{}-{name}.db",
             std::process::id(),
         ));
-        let pool = connect_pool(&database).await.unwrap();
+        let lock = LockFile::acquire(LockFile::path_for(&database)).unwrap();
+        let pool = initialize_new_under_lock(&database, &lock).await.unwrap();
         Self {
+            strategies: SqliteStrategyStore::new(pool.clone()),
             levels: SqliteLevelStore::new(pool.clone()),
             orders: SqliteOrderStore::new(pool),
             database,
@@ -32,17 +39,22 @@ impl Fixture {
     async fn put(&self, id: &str, state: OrderState) {
         let level = Level {
             id: "l-1".into(),
-            venue: VenueName::Uniswap,
-            chain: "base".into(),
-            token_in: "USDC".into(),
-            token_out: "WETH".into(),
+            strategy_id: "s-1".into(),
             side: Side::Buy,
             trigger_price_usd: 3_000.0,
             amount: U256::from(1_000_000u64),
             amount_decimals: 6,
             slippage_bps: 50,
         };
-        self.levels.upsert_level(&level).await.unwrap();
+        let strategy = Strategy {
+            id: "s-1".into(),
+            venue: VenueName::Uniswap,
+            chain: "base".into(),
+            base_token: "WETH".into(),
+            quote_token: "USDC".into(),
+        };
+        self.strategies.upsert_strategy(&strategy).await.unwrap();
+        self.levels.upsert_level(&level, &strategy).await.unwrap();
         let plan = ExecutionPlan::Uniswap {
             chain_name: "base".into(),
             chain_id: 8453,
@@ -50,7 +62,7 @@ impl Fixture {
             input_amount: "1000000".into(),
             quote: json!({"tradeType": "EXACT_INPUT"}),
         };
-        let mut order = Order::new(id.into(), &level, plan, 1);
+        let mut order = Order::new(id.into(), &StrategyLevel { strategy, level }, plan, 1);
         order.state = state;
         order.swap_attempts = 8;
         order.swap_retry_after_ts = Some(1_700_000_000);

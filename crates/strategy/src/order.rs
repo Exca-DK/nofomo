@@ -2,7 +2,7 @@ use alloy_primitives::U256;
 use serde::{Deserialize, Serialize};
 use tempo_agentic_domain::{ExecStep, ExecutionPlan, VenueName};
 
-use crate::level::Level;
+use crate::level::{StrategyLevel, trade_direction};
 
 /// Coarse lifecycle of an [`Order`], derived from its [`OrderState`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -85,7 +85,7 @@ pub enum OrderState {
     },
 }
 
-/// A snapshotted execution attempt for a fired [`Level`].
+/// A snapshotted execution attempt for a fired level.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Order {
     pub id: String,
@@ -108,19 +108,20 @@ pub struct Order {
 
 impl Order {
     /// Creates an order; the venue may later prepend allowance steps.
-    pub fn new(id: String, level: &Level, plan: ExecutionPlan, created_at: i64) -> Self {
+    pub fn new(id: String, entry: &StrategyLevel, plan: ExecutionPlan, created_at: i64) -> Self {
+        let direction = trade_direction(&entry.strategy, entry.level.side);
         Self {
             id,
-            level_id: level.id.clone(),
-            venue: level.venue,
-            chain: level.chain.clone(),
-            token_in: level.token_in.clone(),
-            token_out: level.token_out.clone(),
-            reserved_amount: level.amount,
+            level_id: entry.level.id.clone(),
+            venue: entry.strategy.venue,
+            chain: entry.strategy.chain.clone(),
+            token_in: direction.token_in.to_owned(),
+            token_out: direction.token_out.to_owned(),
+            reserved_amount: entry.level.amount,
             plan,
             state: OrderState::SwapReady {
                 step: ExecStep::Swap,
-                amount_in: level.amount,
+                amount_in: entry.level.amount,
                 withdraw_action_id: None,
             },
             swap_attempts: 0,

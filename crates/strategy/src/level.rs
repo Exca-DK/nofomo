@@ -32,33 +32,60 @@ impl std::str::FromStr for Side {
     }
 }
 
-/// Swaps tokens when the priced asset crosses a threshold.
+/// One configured market shared by all of its levels.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub struct Level {
+pub struct Strategy {
     pub id: String,
     pub venue: VenueName,
     /// Chain name as configured in `EvmConfig::chains`, e.g. `base`.
     pub chain: String,
-    /// Symbol of the token being spent, e.g. `USDC`.
-    pub token_in: String,
-    /// Symbol of the token being acquired, e.g. `WETH`.
-    pub token_out: String,
+    /// Asset whose USD price every level observes, e.g. `WETH`.
+    pub base_token: String,
+    /// Counter asset used to buy or sell the base asset, e.g. `USDC`.
+    pub quote_token: String,
+}
+
+/// A threshold and amount belonging to one [`Strategy`].
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct Level {
+    pub id: String,
+    pub strategy_id: String,
     pub side: Side,
-    /// USD trigger for the asset named by [`base_token`].
+    /// USD trigger for the strategy's base token.
     pub trigger_price_usd: f64,
-    /// Raw base units of `token_in` to spend.
+    /// Raw base units of the token returned by [`trade_direction`].
     pub amount: U256,
-    /// Snapshotted `token_in` decimals.
+    /// Snapshotted decimals of the token being spent.
     pub amount_decimals: u8,
     /// Maximum tolerated slippage, in basis points.
     pub slippage_bps: u16,
 }
 
-/// Asset priced by this level.
-pub fn base_token(level: &Level) -> &str {
-    match level.side {
-        Side::Buy => &level.token_out,
-        Side::Sell => &level.token_in,
+/// One consistent database snapshot of a strategy and its level.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct StrategyLevel {
+    pub strategy: Strategy,
+    pub level: Level,
+}
+
+/// Input and output tokens for a side of a strategy market.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TradeDirection<'a> {
+    pub token_in: &'a str,
+    pub token_out: &'a str,
+}
+
+/// The sole buy/sell mapping used by validation, quoting, and order snapshots.
+pub fn trade_direction(strategy: &Strategy, side: Side) -> TradeDirection<'_> {
+    match side {
+        Side::Buy => TradeDirection {
+            token_in: &strategy.quote_token,
+            token_out: &strategy.base_token,
+        },
+        Side::Sell => TradeDirection {
+            token_in: &strategy.base_token,
+            token_out: &strategy.quote_token,
+        },
     }
 }
 

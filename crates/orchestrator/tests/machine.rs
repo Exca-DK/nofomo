@@ -1,6 +1,6 @@
 use alloy_primitives::U256;
 use tempo_agentic_domain::{ExecStep, ExecutionPlan, VenueName};
-use tempo_agentic_strategy::{Level, Order, OrderState, Side};
+use tempo_agentic_strategy::{Level, Order, OrderState, Side, Strategy, StrategyLevel};
 
 use tempo_agentic_orchestrator::{
     Action, Outcome, RECEIPT_DEADLINE_SECS, SWAP_RETRY_CAP, SWAP_RETRY_MAX_BACKOFF_SECS, apply,
@@ -12,15 +12,22 @@ const AMOUNT: u64 = 1_000_000;
 fn order(state: OrderState) -> Order {
     let level = Level {
         id: "l-1".into(),
-        venue: VenueName::Uniswap,
-        chain: "base".into(),
-        token_in: "USDC".into(),
-        token_out: "WETH".into(),
+        strategy_id: "s-1".into(),
         side: Side::Buy,
         trigger_price_usd: 3_000.0,
         amount: U256::from(AMOUNT),
         amount_decimals: 6,
         slippage_bps: 50,
+    };
+    let entry = StrategyLevel {
+        strategy: Strategy {
+            id: "s-1".into(),
+            venue: VenueName::Uniswap,
+            chain: "base".into(),
+            base_token: "WETH".into(),
+            quote_token: "USDC".into(),
+        },
+        level,
     };
     let plan = ExecutionPlan::Uniswap {
         chain_name: "base".into(),
@@ -29,7 +36,7 @@ fn order(state: OrderState) -> Order {
         input_amount: AMOUNT.to_string(),
         quote: serde_json::Value::Null,
     };
-    let mut order = Order::new("o-1".into(), &level, plan, 0);
+    let mut order = Order::new("o-1".into(), &entry, plan, 0);
     order.state = state;
     order
 }
