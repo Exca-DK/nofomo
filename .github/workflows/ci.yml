@@ -19,12 +19,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The toolchain comes from rust-toolchain.toml, which already pins the
-      # version and asks for clippy and rustfmt. `sqlite3` is checked here so a
-      # runner image without it says so plainly instead of failing inside make.
-      - name: Show tooling
-        run: rustc --version && cargo --version && sqlite3 --version
+      # No explicit toolchain step: rust-toolchain.toml pins the version and
+      # asks for clippy and rustfmt, and rustup installs from it on first use.
+      # Installing `stable` here would be downloaded and then overridden by the
+      # pin, which is wasted work and reads as though CI ran on stable.
+      - name: Install sqlite3 and report versions
+        run: |
+          sudo apt-get update && sudo apt-get install -y sqlite3
+          rustc --version && cargo --version && sqlite3 --version
 
+      # Rust-aware: keyed on the toolchain as well as the lockfile, and prunes
+      # stale build artifacts. A plain target/ cache keyed only on Cargo.lock
+      # hands incompatible artifacts to a bumped toolchain.
       - uses: Swatinem/rust-cache@v2
 
       # `make check` rebuilds the sqlx validation database from the migrations

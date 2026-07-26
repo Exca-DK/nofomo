@@ -14,6 +14,8 @@ use tempo_agentic_strategy::{LevelStore, OrderStore};
 use tempo_agentic_trigger::{LevelDraft, validate_level};
 use tempo_agentic_vault::{ChainVault, EvmVault, SuiVault};
 
+mod integrate;
+
 #[derive(Parser)]
 #[command(name = "tempo-agentic-admin", version)]
 struct Cli {
@@ -61,6 +63,11 @@ enum Command {
         /// Overwrite an existing keystore/keypair for this chain.
         #[arg(long)]
         force: bool,
+    },
+    /// Integrate or remove the tempo-agentic MCP server in OpenClaw.
+    IntegrateOpenclaw {
+        #[arg(long)]
+        remove: bool,
     },
 }
 
@@ -171,6 +178,9 @@ async fn main() -> Result<()> {
             private_key,
             force,
         } => import_key(&cli.config, chain, &private_key, force)?,
+        Command::IntegrateOpenclaw { remove } => {
+            integrate::openclaw(&cli.config, remove).await?;
+        }
     }
     Ok(())
 }

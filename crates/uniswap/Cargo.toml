@@ -14,5 +14,10 @@ tempo-agentic-config.workspace = true
 tempo-agentic-domain.workspace = true
 tempo-agentic-graph.workspace = true
 
+[dev-dependencies]
+temp-env = "0.3"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+wiremock = "0.6"
+
 [lints]
 workspace = true
