@@ -7,7 +7,7 @@ define load_env
 	set -a && . $(ENV_LOCAL) && set +a &&
 endef
 
-# Rebuild the sqlx validation database from shipped migrations.
+# Rebuild the sqlx validation database from the shipped schema.
 export DATABASE_URL = sqlite://$(SQLX_DEV_DB)
 
 .PHONY: schema check build bootstrap run health prepare require-env docker-build docker-run help
@@ -21,7 +21,7 @@ require-env:
 
 schema:
 	rm -f $(SQLX_DEV_DB)
-	for f in crates/storage/migrations/*.sql; do sqlite3 $(SQLX_DEV_DB) < $$f; done
+	sqlite3 $(SQLX_DEV_DB) < crates/storage/schema.sql
 
 # Refresh the bootstrap cache for all targets; `check` still validates live.
 # Keep output visible because failure may leave the cache empty.
