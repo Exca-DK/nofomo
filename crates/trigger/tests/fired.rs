@@ -195,6 +195,7 @@ fn a_level_with_an_order_in_flight_or_filled_does_not_fire() {
         amount_in: U256::from(1_000_000u64),
         tx_hash: "0xhash".into(),
         withdraw_action_id: None,
+        submitted_at: 0,
     };
     let filled = OrderState::Filled {
         tx_hash: "0xhash".into(),

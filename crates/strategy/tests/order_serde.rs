@@ -63,6 +63,7 @@ fn every_state() -> Vec<OrderState> {
             amount_in: U256::from(1_000_000u64),
             tx_hash: "0xdeadbeef".into(),
             withdraw_action_id: None,
+            submitted_at: 1_700_000_042,
         },
         OrderState::Depositing {
             tx_hash: "0xdeadbeef".into(),
@@ -96,6 +97,28 @@ fn every_order_state_variant_round_trips_through_json() {
         let decoded: Order = serde_json::from_str(&json).unwrap();
         assert_eq!(order, decoded, "round trip changed: {json}");
     }
+}
+
+// `submitted_at` was added after rows had already been written, so it defaults
+// rather than being required. A row from before it existed has to keep loading —
+// as long overdue, which is the right reading for a transaction nobody has
+// checked on since the process last restarted.
+#[test]
+fn a_submitted_row_written_before_the_deadline_existed_still_loads() {
+    let older = json!({
+        "phase": "submitted",
+        "step": "swap",
+        "amount_in": "0xf4240",
+        "tx_hash": "0xdeadbeef",
+        "withdraw_action_id": null
+    });
+
+    let decoded: OrderState = serde_json::from_value(older).unwrap();
+
+    let OrderState::Submitted { submitted_at, .. } = decoded else {
+        panic!("expected a submitted state");
+    };
+    assert_eq!(submitted_at, 0);
 }
 
 #[test]

@@ -13,7 +13,16 @@ endef
 # something nobody ships.
 export DATABASE_URL = sqlite://$(SQLX_DEV_DB)
 
-.PHONY: schema check build bootstrap run health integrate prepare docker-build docker-run help
+.PHONY: schema check build bootstrap run health prepare require-env docker-build docker-run help
+
+# $(ENV_LOCAL) is no longer committed, so a fresh clone has to be told what to
+# copy. Listed first among the prerequisites so it fails in a second rather than
+# after a full release build.
+require-env:
+	@[ -f $(ENV_LOCAL) ] || { \
+	  echo "missing $(ENV_LOCAL)" >&2; \
+	  echo "run: cp $(ENV_LOCAL).example $(ENV_LOCAL), then fill in your API keys" >&2; \
+	  exit 1; }
 
 schema:
 	rm -f $(SQLX_DEV_DB)
@@ -42,17 +51,14 @@ check: schema
 build: schema
 	cargo build --workspace --release
 
-bootstrap: build
-	$(load_env) ./target/release/tempo-agentic-admin bootstrap
+bootstrap: require-env build
+	$(load_env) ./target/release/tempo-agentic-daemon bootstrap
 
-run: build bootstrap
-	$(load_env) ./target/release/tempo-agentic
+run: require-env build bootstrap
+	$(load_env) ./target/release/tempo-agentic-daemon run
 
-health: build bootstrap
-	$(load_env) ./target/release/tempo-agentic-admin health
-
-integrate: build
-	$(load_env) ./target/release/tempo-agentic-admin integrate-openclaw
+health: require-env build bootstrap
+	$(load_env) ./target/release/tempo-agentic-daemon health
 
 help:
 	@grep -E '^[a-zA-Z0-9_-]+:' Makefile \

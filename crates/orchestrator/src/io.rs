@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use tempo_agentic_domain::{ChainClient, ExecutionPlan, ReceiptStatus, Signer, TradeVenue};
-use tempo_agentic_strategy::Order;
+use tempo_agentic_strategy::{Order, OrderState};
 
-use crate::machine::{Action, Outcome};
+use crate::machine::{Action, Outcome, RECEIPT_DEADLINE_SECS};
 
 /// Everything the execution loop needs to reach the outside world.
 pub struct ExecDeps {
@@ -57,7 +58,10 @@ pub async fn perform(deps: &ExecDeps, order: &Order, action: Action) -> Outcome 
         Action::Broadcast { signed } => match deps.chain(&order.plan) {
             Err(error) => failed(error),
             Ok(chain) => match chain.broadcast(&signed).await {
-                Ok(tx_hash) => Outcome::Broadcast { tx_hash },
+                Ok(tx_hash) => Outcome::Broadcast {
+                    tx_hash,
+                    at: now_unix(),
+                },
                 Err(error) => failed(error),
             },
         },
@@ -80,8 +84,8 @@ async fn sign(deps: &ExecDeps, order: &Order) -> Result<Outcome> {
         .first()
         .context("venue reports no remaining steps for an unfinished plan")?;
 
-    // Reading the nonce off the latest block is safe here because the previous
-    // step's receipt already exists, so the node counts that transaction.
+    // The nonce comes from the pending block, so several orders signed in one
+    // sweep pass get consecutive ones rather than all the same.
     let ctx = chain.tx_context(deps.signer.address()).await?;
     let unsigned = venue.build(&order.plan, step, &ctx).await?;
     let signed = deps.signer.sign(&unsigned).await?;
@@ -101,12 +105,39 @@ async fn check_receipt(deps: &ExecDeps, order: &Order, tx_hash: &str) -> Outcome
     match chain.confirmation(tx_hash).await {
         Ok(ReceiptStatus::Success) => Outcome::Confirmed,
         Ok(ReceiptStatus::Reverted) => Outcome::Reverted,
+        Ok(ReceiptStatus::Pending) if past_deadline(order) => {
+            tracing::warn!(
+                order = %order.id,
+                tx_hash,
+                "no receipt within the deadline; giving up on this transaction"
+            );
+            Outcome::ReceiptTimedOut
+        }
         Ok(ReceiptStatus::Pending) => Outcome::StillPending,
         Err(error) => {
             tracing::warn!(order = %order.id, tx_hash, %error, "receipt check failed");
             Outcome::StillPending
         }
     }
+}
+
+// Without a deadline a transaction whose nonce was taken by somebody else keeps
+// its order — and that order's level — stuck for good, because no receipt is
+// ever going to appear.
+fn past_deadline(order: &Order) -> bool {
+    match &order.state {
+        OrderState::Submitted { submitted_at, .. } => {
+            now_unix() > submitted_at + RECEIPT_DEADLINE_SECS
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 // The alternate form keeps the whole `anyhow` context chain, which is the only

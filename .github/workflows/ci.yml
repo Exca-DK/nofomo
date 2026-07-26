@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+# A second push to the same branch makes the first run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -14,24 +19,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: install rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      # No explicit toolchain step: rust-toolchain.toml pins the version and
+      # asks for clippy and rustfmt, and rustup installs from it on first use.
+      # Installing `stable` here would be downloaded and then overridden by the
+      # pin, which is wasted work and reads as though CI ran on stable.
+      - name: Install sqlite3 and report versions
+        run: |
+          sudo apt-get update && sudo apt-get install -y sqlite3
+          rustc --version && cargo --version && sqlite3 --version
 
-      - name: cache cargo registry and target
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+      # Rust-aware: keyed on the toolchain as well as the lockfile, and prunes
+      # stale build artifacts. A plain target/ cache keyed only on Cargo.lock
+      # hands incompatible artifacts to a bumped toolchain.
+      - uses: Swatinem/rust-cache@v2
 
-      - name: install sqlite3
-        run: sudo apt-get update && sudo apt-get install -y sqlite3
-
-      - name: fmt, clippy, test
+      # `make check` rebuilds the sqlx validation database from the migrations
+      # first, so every `sqlx::query!` is checked against the schema that ships
+      # rather than against a committed cache that could have drifted.
+      - name: fmt, tests, clippy
         run: make check

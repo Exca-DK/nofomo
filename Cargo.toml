@@ -15,7 +15,6 @@ tempo-agentic-storage = { path = "crates/storage" }
 tempo-agentic-graph = { path = "crates/graph" }
     tempo-agentic-uniswap = { path = "crates/uniswap" }
     tempo-agentic-cetus = { path = "crates/cetus" }
-    tempo-agentic-agent = { path = "crates/agent" }
 tempo-agentic-mcp = { path = "crates/mcp" }
 tempo-agentic-vault = { path = "crates/vault" }
 tempo-agentic-strategy = { path = "crates/strategy" }
