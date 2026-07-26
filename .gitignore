@@ -1,9 +1,6 @@
 /target
-# Unanchored on purpose: an anchored `/.env` misses infra/local/.env, which is
-# exactly where the keys ended up.
-.env
-.env.*
-!.env.example
+/.env
+/.env.*
 /config.json
 *.db
 *.db-shm

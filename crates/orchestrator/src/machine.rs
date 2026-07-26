@@ -26,9 +26,6 @@ pub enum Outcome {
     },
     Broadcast {
         tx_hash: String,
-        /// Unix second the bytes went out, kept so the wait for a receipt can be
-        /// given a deadline.
-        at: i64,
     },
     Confirmed,
     /// Nothing moved. The order keeps its state and is retried on a later pass.
@@ -42,16 +39,7 @@ pub enum Outcome {
     QuarantineResolved,
     /// The transaction was ready but sending it is not allowed.
     BroadcastBlocked,
-    /// No receipt turned up before the deadline.
-    ReceiptTimedOut,
 }
-
-/// How long a broadcast transaction is given to produce a receipt.
-///
-/// Generous on purpose. Giving up frees the level to fire again, so a
-/// transaction that landed late would become a second fill; the wait has to be
-/// long enough that a live transaction has almost certainly been dropped first.
-pub const RECEIPT_DEADLINE_SECS: i64 = 1_800;
 
 /// Broadcast attempts an order may burn before it is parked. The count is raised
 /// after this decision, so the cap lands on the following attempt.
@@ -143,13 +131,12 @@ pub fn apply(order: &Order, outcome: Outcome) -> Result<Option<OrderState>, Tran
                 withdraw_action_id,
                 ..
             },
-            O::Broadcast { tx_hash, at },
+            O::Broadcast { tx_hash },
         ) => S::Submitted {
             step: *step,
             amount_in: *amount_in,
             tx_hash,
             withdraw_action_id: withdraw_action_id.clone(),
-            submitted_at: at,
         },
         // A refused send says nothing about the transaction: the bytes may sit in
         // a mempool already. Retrying resends exactly the same bytes, which only
@@ -199,17 +186,6 @@ pub fn apply(order: &Order, outcome: Outcome) -> Result<Option<OrderState>, Tran
         (S::Submitted { tx_hash, .. }, O::Reverted) => S::Failed {
             tx_hash: Some(tx_hash.clone()),
             reason: "reverted on-chain".to_string(),
-        },
-        // The only way out of `Submitted` when a nonce was taken by somebody
-        // else: no receipt will ever come. The hash is kept and the reason says
-        // outright that the transaction is not provably dead, because ending
-        // here frees the level and a late fill would be a second one.
-        (S::Submitted { tx_hash, .. }, O::ReceiptTimedOut) => S::Failed {
-            tx_hash: Some(tx_hash.clone()),
-            reason: format!(
-                "no receipt within {} minutes; the transaction may still land",
-                RECEIPT_DEADLINE_SECS / 60
-            ),
         },
 
         // Nothing left the process, so there is no hash and nothing to retry:
@@ -261,6 +237,5 @@ fn outcome_name(outcome: &Outcome) -> &'static str {
         Outcome::ExecFailed { .. } => "ExecFailed",
         Outcome::QuarantineResolved => "QuarantineResolved",
         Outcome::BroadcastBlocked => "BroadcastBlocked",
-        Outcome::ReceiptTimedOut => "ReceiptTimedOut",
     }
 }

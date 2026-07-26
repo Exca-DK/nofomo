@@ -56,16 +56,4 @@ pub trait PriceSource: Send + Sync {
     /// serve this pair at all — an unsupported chain, say — because retrying
     /// that would never succeed.
     fn stream(&self, pair: &PricePair) -> PriceStream;
-
-    /// Whether this source can price `pair` at all.
-    ///
-    /// Asked before a rule is stored. A rule the source cannot serve would sit
-    /// in the database looking armed while its stream ended after one warning,
-    /// so it is refused up front instead.
-    ///
-    /// Defaults to `true`: a source that cannot say in advance should let the
-    /// rule through rather than reject everything.
-    fn supports(&self, _pair: &PricePair) -> bool {
-        true
-    }
 }

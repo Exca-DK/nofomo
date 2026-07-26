@@ -4,10 +4,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tempo_agentic_config::{EvmChain, EvmConfig, EvmToken};
 use tempo_agentic_domain::parse_units_string;
-use tempo_agentic_price::PriceSource;
-use tempo_agentic_strategy::{Level, base_token};
-
-use crate::resolver::TokenResolver;
+use tempo_agentic_strategy::Level;
 
 /// What a person or an agent supplies when writing a rule.
 ///
@@ -34,13 +31,9 @@ pub struct LevelDraft {
 /// slippage exceeds `max_slippage_bps`, or when the amount is not a number.
 ///
 /// Checking here rather than at execution matters: a rule naming a chain or a
-/// token nobody can price would be stored happily and then never fire.
-pub fn validate_level(
-    evm: &EvmConfig,
-    max_slippage_bps: u16,
-    prices: &dyn PriceSource,
-    draft: &LevelDraft,
-) -> Result<Level> {
+/// token the daemon does not know would be stored happily and then never fire,
+/// because nothing could price it.
+pub fn validate_level(evm: &EvmConfig, max_slippage_bps: u16, draft: &LevelDraft) -> Result<Level> {
     let chain = evm
         .chains
         .iter()
@@ -58,7 +51,7 @@ pub fn validate_level(
     }
     let amount = parse_units_string(&draft.amount, input.decimals)?;
 
-    let level = Level {
+    Ok(Level {
         id: draft.id.clone(),
         venue: draft.venue.parse()?,
         // Taken from the configuration rather than the draft, so the stored
@@ -71,22 +64,7 @@ pub fn validate_level(
         amount: U256::from_str_radix(&amount, 10).context("amount does not fit in 256 bits")?,
         amount_decimals: input.decimals,
         slippage_bps: draft.slippage_bps,
-    };
-
-    // Asked last, because it takes the finished rule to know which token would
-    // be watched. A rule that fails here used to store fine, subscribe once, log
-    // a single warning and then stay armed and dead.
-    let pair = TokenResolver::from_config(evm)
-        .price_pair(&level)
-        .context("cannot work out which token this rule would be priced on")?;
-    if !prices.supports(&pair) {
-        bail!(
-            "no price source quotes {} on {}, so this rule could never fire",
-            base_token(&level),
-            level.chain
-        );
-    }
-    Ok(level)
+    })
 }
 
 fn find_token<'a>(chain: &'a EvmChain, symbol: &str) -> Option<&'a EvmToken> {

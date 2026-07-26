@@ -55,25 +55,20 @@ impl EvmChainClient {
     }
 }
 
-/// Whether the node is saying "this transaction is already accounted for".
-///
-/// Treating these as success is what makes a re-broadcast after a crash safe:
-/// the bytes are identical, so the same nonce can only ever land once. Nodes
-/// disagree on the wording, hence the list.
-///
-/// `nonce too low` is included on purpose even though it is ambiguous — it can
-/// mean our transaction was mined, or that somebody else took the nonce. The
-/// first case resolves when the receipt turns up; the second never produces one
-/// and is caught by the receipt deadline instead.
-///
-/// `replacement transaction underpriced` is deliberately **not** here. It means
-/// a *different* transaction holds that nonce and ours will never land, so
-/// calling it success would park the order on a hash that is in no mempool.
+/// Nodes disagree on the wording, so match the known phrasings for "this
+/// transaction is already accounted for". Treating them as success is what makes
+/// a re-broadcast after a crash safe: the bytes are identical, so the same nonce
+/// can only ever land once.
 pub fn is_duplicate_submission(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
-    ["already known", "already imported", "nonce too low"]
-        .iter()
-        .any(|phrase| message.contains(phrase))
+    [
+        "already known",
+        "already imported",
+        "nonce too low",
+        "replacement transaction underpriced",
+    ]
+    .iter()
+    .any(|phrase| message.contains(phrase))
 }
 
 #[async_trait]
@@ -85,14 +80,9 @@ impl ChainClient for EvmChainClient {
     async fn tx_context(&self, from: &str) -> Result<TxContext> {
         let from =
             Address::from_str(from).with_context(|| format!("invalid from address {from}"))?;
-        // Counted against the pending block, not the latest one. A sweep drives
-        // several orders in a row and each returns as soon as it has broadcast,
-        // so with `latest` every order in one pass would read the same nonce and
-        // all but one would be thrown away by the node.
         let nonce = self
             .provider
             .get_transaction_count(from)
-            .pending()
             .await
             .context("eth_getTransactionCount failed")?;
         let fees = self

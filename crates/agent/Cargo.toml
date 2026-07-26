@@ -1,26 +1,27 @@
 [package]
-name = "tempo-agentic-trigger"
+name = "tempo-agentic-agent"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-alloy-primitives.workspace = true
 anyhow.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempo-agentic-chain.workspace = true
 tempo-agentic-config.workspace = true
 tempo-agentic-domain.workspace = true
-schemars.workspace = true
-serde.workspace = true
-tempo-agentic-price.workspace = true
-tempo-agentic-strategy.workspace = true
+tempo-agentic-graph.workspace = true
+tempo-agentic-storage.workspace = true
+tempo-agentic-uniswap.workspace = true
+tempo-agentic-cetus.workspace = true
+tempo-agentic-vault.workspace = true
 tokio.workspace = true
-tracing.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
-serde_json.workspace = true
-tempo-agentic-storage.workspace = true
+temp-env = "0.3"
 
 [lints]
 workspace = true

@@ -138,7 +138,6 @@ async fn every_order_state_round_trips_with_exact_amounts() {
             amount_in,
             tx_hash: "0xhash".into(),
             withdraw_action_id: None,
-            submitted_at: 1_700_000_042,
         },
         OrderState::Depositing {
             tx_hash: "0xhash".into(),
