@@ -18,6 +18,13 @@ impl VenueName {
             Self::Cetus => "cetus",
         }
     }
+
+    pub fn family(&self) -> crate::ChainFamily {
+        match self {
+            Self::Uniswap => crate::ChainFamily::Evm,
+            Self::Cetus => crate::ChainFamily::Sui,
+        }
+    }
 }
 
 impl std::str::FromStr for VenueName {

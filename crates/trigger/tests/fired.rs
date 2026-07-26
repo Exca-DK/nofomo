@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use alloy_primitives::U256;
 use serde_json::json;
-use tempo_agentic_config::{EvmChain, EvmConfig, EvmToken};
+use tempo_agentic_config::{EvmChain, EvmConfig, EvmToken, SuiConfig};
 use tempo_agentic_domain::ExecutionPlan;
 use tempo_agentic_domain::VenueName;
 use tempo_agentic_price::{PricePair, PriceTick};
@@ -37,16 +37,19 @@ fn chain(name: &str, chain_id: u64, tokens: &[(&str, &str, u8)]) -> EvmChain {
 }
 
 fn resolver() -> TokenResolver {
-    TokenResolver::from_config(&EvmConfig {
-        chains: vec![
-            chain(
-                "base",
-                BASE_ID,
-                &[("WETH", WETH_BASE, 18), ("USDC", USDC_BASE, 6)],
-            ),
-            chain("ethereum", ETHEREUM_ID, &[("WETH", WETH_ETHEREUM, 18)]),
-        ],
-    })
+    TokenResolver::from_config(
+        &EvmConfig {
+            chains: vec![
+                chain(
+                    "base",
+                    BASE_ID,
+                    &[("WETH", WETH_BASE, 18), ("USDC", USDC_BASE, 6)],
+                ),
+                chain("ethereum", ETHEREUM_ID, &[("WETH", WETH_ETHEREUM, 18)]),
+            ],
+        },
+        &SuiConfig::default(),
+    )
 }
 
 fn level(id: &str, side: Side) -> Level {

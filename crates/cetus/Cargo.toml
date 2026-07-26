@@ -5,17 +5,25 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "create-pool"
+path = "src/bin/create_pool.rs"
+
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+clap.workspace = true
 ethnum = "1"
 prost-types = "0.14"
 serde_json.workspace = true
 sui-rpc.workspace = true
 sui-sdk-types.workspace = true
 sui-transaction-builder.workspace = true
+tempo-agentic-chain.workspace = true
 tempo-agentic-config.workspace = true
 tempo-agentic-domain.workspace = true
+tempo-agentic-vault.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

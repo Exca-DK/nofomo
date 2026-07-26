@@ -1,10 +1,11 @@
 use serde_json::Value;
 use tempo_agentic_price::{PricePair, PriceTick};
 
-/// Maps supported EVM chain IDs to DexPaprika names.
 pub fn chain_slug(chain_id: u64) -> Option<&'static str> {
     match chain_id {
         1 => Some("ethereum"),
+        130 => Some("unichain"),
+        4663 => Some("robinhood"),
         8453 => Some("base"),
         42161 => Some("arbitrum"),
         _ => None,

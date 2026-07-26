@@ -101,12 +101,18 @@ fn heartbeats_and_malformed_frames_are_skipped_not_fatal() {
     assert_eq!(parse_tick(&pair(), r#"{"event":"ping"}"#), None);
 }
 
-// Keep provider chains aligned with config validation.
 #[test]
 fn every_supported_chain_has_a_slug() {
-    assert_eq!(chain_slug(1), Some("ethereum"));
-    assert_eq!(chain_slug(8453), Some("base"));
-    assert_eq!(chain_slug(42161), Some("arbitrum"));
+    for chain_id in [1, 130, 4663, 8453, 42161] {
+        assert!(
+            tempo_agentic_config::is_supported_evm_chain(chain_id),
+            "chain {chain_id} should be supported by the config"
+        );
+        assert!(
+            chain_slug(chain_id).is_some(),
+            "chain {chain_id} is configurable but the feed cannot name it"
+        );
+    }
 }
 
 #[test]

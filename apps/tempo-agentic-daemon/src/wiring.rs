@@ -25,6 +25,7 @@ pub fn build(
     allow_broadcast: bool,
     levels: Arc<dyn LevelStore>,
     orders: Arc<dyn OrderStore>,
+    tokens: Arc<TokenResolver>,
 ) -> Result<Wiring> {
     let graph = GraphClient::new(&config.graph)?;
 
@@ -74,7 +75,7 @@ pub fn build(
             levels,
             orders,
             venues,
-            resolver: TokenResolver::from_config(&config.evm),
+            resolver: tokens,
         },
     })
 }

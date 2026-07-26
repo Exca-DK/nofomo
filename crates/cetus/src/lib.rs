@@ -10,13 +10,13 @@ use async_trait::async_trait;
 use constants::NetworkConstants;
 use sui_rpc::Client;
 use sui_rpc::field::{FieldMask, FieldMaskUtil};
-use sui_rpc::proto::sui::rpc::v2::{GetObjectRequest, ListOwnedObjectsRequest};
+use sui_rpc::proto::sui::rpc::v2::GetObjectRequest;
 use sui_sdk_types::{Address, TypeTag};
 use sui_transaction_builder::{Function, ObjectInput, TransactionBuilder};
 use tempo_agentic_config::SuiConfig;
 use tempo_agentic_domain::{
     ChainFamily, ExecStep, ExecutionPlan, QuoteDraft, QuoteTradeRequest, Signer, TradeVenue,
-    TxContext, UnsignedTx,
+    TxContext, UnsignedTx, normalize_coin_type, validate_coin_type,
 };
 const CLOCK_OBJECT_ID: &str = "0x6";
 const MAX_TICKS_FETCHED: usize = 20_000;
@@ -67,7 +67,8 @@ impl CetusVenue {
         let ticks = pool::fetch_ticks(client, &ticks_handle, MAX_TICKS_FETCHED).await?;
 
         // `a2b` follows Cetus's own convention: swapping from `coin_type_a` to `coin_type_b`.
-        let a2b = coin_types_match(&discovered.coin_type_a, &request.token_in);
+        let a2b =
+            normalize_coin_type(&discovered.coin_type_a) == normalize_coin_type(&request.token_in);
         let input_decimals = pool::fetch_coin_decimals(client, &request.token_in).await?;
         let output_decimals = pool::fetch_coin_decimals(client, &request.token_out).await?;
         let input_amount: u128 =
@@ -102,58 +103,6 @@ impl CetusVenue {
                 min_amount_out: minimum_out,
             },
         })
-    }
-
-    /// Merges owned coins and splits out exactly `amount`.
-    async fn fund_exact_coin(
-        &self,
-        client: &mut Client,
-        builder: &mut TransactionBuilder,
-        owner: Address,
-        coin_type: &str,
-        amount: u64,
-    ) -> Result<sui_transaction_builder::Argument> {
-        let mut request = ListOwnedObjectsRequest::default();
-        request.owner = Some(owner.to_string());
-        request.object_type = Some(format!("0x2::coin::Coin<{coin_type}>"));
-        request.page_size = Some(50);
-        request.read_mask = Some(FieldMask::from_paths(["object_id", "balance"]));
-        let response = client
-            .state_client()
-            .list_owned_objects(request)
-            .await
-            .with_context(|| format!("failed to list owned {coin_type} coins"))?
-            .into_inner();
-
-        let mut total = 0u64;
-        let mut coin_ids = Vec::new();
-        for object in response.objects {
-            let Some(id) = object.object_id else {
-                continue;
-            };
-            coin_ids.push(id);
-            total = total.saturating_add(object.balance.unwrap_or_default());
-            if total >= amount {
-                break;
-            }
-        }
-        if total < amount {
-            bail!("insufficient {coin_type} balance: have {total}, need {amount}");
-        }
-
-        let mut coin_args = Vec::new();
-        for id in &coin_ids {
-            let address =
-                Address::from_str(id).with_context(|| format!("invalid coin object id {id}"))?;
-            coin_args.push(builder.object(ObjectInput::new(address)));
-        }
-        let primary = coin_args[0];
-        if coin_args.len() > 1 {
-            builder.merge_coins(primary, coin_args[1..].to_vec());
-        }
-        let amount_arg = builder.pure(&amount);
-        let split = builder.split_coins(primary, vec![amount_arg]);
-        Ok(split[0])
     }
 
     fn zero_coin(
@@ -237,27 +186,25 @@ impl TradeVenue for CetusVenue {
         builder.set_gas_budget(*gas_budget);
 
         let (coin_a_arg, coin_b_arg) = if *a2b {
-            let coin_a = self
-                .fund_exact_coin(
-                    &mut client,
-                    &mut builder,
-                    sender_address,
-                    &coin_type_a,
-                    *input_amount,
-                )
-                .await?;
+            let coin_a = pool::fund_exact_coin(
+                &mut client,
+                &mut builder,
+                sender_address,
+                &coin_type_a,
+                *input_amount,
+            )
+            .await?;
             let coin_b = self.zero_coin(&mut builder, &coin_type_b)?;
             (coin_a, coin_b)
         } else {
-            let coin_b = self
-                .fund_exact_coin(
-                    &mut client,
-                    &mut builder,
-                    sender_address,
-                    &coin_type_b,
-                    *input_amount,
-                )
-                .await?;
+            let coin_b = pool::fund_exact_coin(
+                &mut client,
+                &mut builder,
+                sender_address,
+                &coin_type_b,
+                *input_amount,
+            )
+            .await?;
             let coin_a = self.zero_coin(&mut builder, &coin_type_a)?;
             (coin_a, coin_b)
         };
@@ -347,25 +294,6 @@ async fn pool_coin_types(client: &mut Client, pool_id: &str) -> Result<(String, 
         .with_context(|| format!("Cetus pool {pool_id} has no Move type"))?;
     pool::parse_pool_type_params(&object_type)
         .with_context(|| format!("could not parse coin types from pool type {object_type}"))
-}
-
-fn coin_types_match(a: &str, b: &str) -> bool {
-    let normalize = |t: &str| {
-        let (address, rest) = t.split_once("::").unwrap_or((t, ""));
-        format!(
-            "{}::{rest}",
-            address.trim_start_matches("0x").trim_start_matches('0')
-        )
-    };
-    normalize(a) == normalize(b)
-}
-
-fn validate_coin_type(value: &str) -> Result<()> {
-    let parts: Vec<&str> = value.split("::").collect();
-    if parts.len() < 3 || !parts[0].starts_with("0x") {
-        bail!("{value} is not a fully-qualified Sui coin type");
-    }
-    Ok(())
 }
 
 fn parse_type_tag(coin_type: &str) -> Result<TypeTag> {

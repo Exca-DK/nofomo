@@ -15,7 +15,6 @@ rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tempo-agentic-config.workspace = true
 tempo-agentic-price.workspace = true
 tempo-agentic-strategy.workspace = true
 tempo-agentic-trigger.workspace = true

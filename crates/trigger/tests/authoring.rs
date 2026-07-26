@@ -1,13 +1,12 @@
 use std::collections::HashMap;
 
 use alloy_primitives::U256;
-use tempo_agentic_config::{EvmChain, EvmConfig, EvmToken};
+use tempo_agentic_config::{EvmChain, EvmConfig, EvmToken, PriceRef, SuiCoin, SuiConfig};
 use tempo_agentic_domain::VenueName;
 use tempo_agentic_price::{PricePair, PriceSource, PriceStream};
 use tempo_agentic_strategy::Side;
-use tempo_agentic_trigger::{LevelDraft, validate_level};
+use tempo_agentic_trigger::{LevelDraft, TokenResolver, validate_level};
 
-/// Supports only its configured chains.
 struct Prices {
     chains: Vec<u64>,
 }
@@ -55,6 +54,39 @@ fn evm() -> EvmConfig {
     }
 }
 
+fn sui() -> SuiConfig {
+    SuiConfig {
+        enabled: true,
+        rpc_url: "https://example.invalid".into(),
+        coins: HashMap::from([
+            (
+                "hBTC".to_string(),
+                SuiCoin {
+                    coin_type: "0xfce::btc::BTC".into(),
+                    decimals: 8,
+                    price_ref: Some(PriceRef {
+                        chain_id: 8453,
+                        address: "0x1111111111111111111111111111111111111111".into(),
+                    }),
+                },
+            ),
+            (
+                "SUI".to_string(),
+                SuiCoin {
+                    coin_type: "0x2::sui::SUI".into(),
+                    decimals: 9,
+                    price_ref: None,
+                },
+            ),
+        ]),
+        ..SuiConfig::default()
+    }
+}
+
+fn tokens() -> TokenResolver {
+    TokenResolver::from_config(&evm(), &sui())
+}
+
 fn draft() -> LevelDraft {
     LevelDraft {
         id: "l-1".into(),
@@ -70,11 +102,11 @@ fn draft() -> LevelDraft {
 }
 
 fn accept(draft: LevelDraft) -> tempo_agentic_strategy::Level {
-    validate_level(&evm(), MAX_SLIPPAGE_BPS, &prices(), &draft).unwrap()
+    validate_level(&tokens(), MAX_SLIPPAGE_BPS, &prices(), &draft).unwrap()
 }
 
 fn reject(draft: LevelDraft) -> String {
-    validate_level(&evm(), MAX_SLIPPAGE_BPS, &prices(), &draft)
+    validate_level(&tokens(), MAX_SLIPPAGE_BPS, &prices(), &draft)
         .expect_err("this draft must not be storable")
         .to_string()
 }
@@ -90,7 +122,6 @@ fn a_sound_draft_becomes_a_rule() {
     assert_eq!(level.slippage_bps, 50);
 }
 
-// Convert human units to exact chain units.
 #[test]
 fn the_amount_is_scaled_by_the_input_token() {
     let level = accept(draft());
@@ -109,7 +140,6 @@ fn the_amount_is_scaled_by_the_input_token() {
     assert_eq!(level.amount_decimals, 18);
 }
 
-// Store the resolver's configured spelling.
 #[test]
 fn the_chain_is_stored_as_the_configuration_spells_it() {
     let level = accept(LevelDraft {
@@ -124,7 +154,6 @@ fn the_chain_is_stored_as_the_configuration_spells_it() {
     assert_eq!(level.token_out, "WETH");
 }
 
-// Reject unpriceable rules.
 #[test]
 fn a_rule_nothing_can_price_is_refused() {
     assert!(
@@ -150,7 +179,6 @@ fn a_rule_nothing_can_price_is_refused() {
     );
 }
 
-// Reject rules the venue cannot execute.
 #[test]
 fn slippage_above_the_ceiling_is_refused() {
     let error = reject(LevelDraft {
@@ -196,24 +224,22 @@ fn an_unreadable_side_venue_or_amount_is_refused() {
     );
 }
 
-// Reject configured chains unsupported by the price source.
 #[test]
 fn a_chain_no_source_quotes_is_refused() {
     let quoting_nothing = Prices { chains: Vec::new() };
-    let error = validate_level(&evm(), MAX_SLIPPAGE_BPS, &quoting_nothing, &draft())
+    let error = validate_level(&tokens(), MAX_SLIPPAGE_BPS, &quoting_nothing, &draft())
         .expect_err("a rule nothing can price must not be storable")
         .to_string();
     assert!(error.contains("could never fire"), "unclear: {error}");
     assert!(error.contains("WETH"), "say which token: {error}");
 }
 
-// Support checks follow the side's priced token.
 #[test]
 fn the_side_decides_which_token_has_to_be_quotable() {
-    assert!(validate_level(&evm(), MAX_SLIPPAGE_BPS, &prices(), &draft()).is_ok());
+    assert!(validate_level(&tokens(), MAX_SLIPPAGE_BPS, &prices(), &draft()).is_ok());
     assert!(
         validate_level(
-            &evm(),
+            &tokens(),
             MAX_SLIPPAGE_BPS,
             &prices(),
             &LevelDraft {
@@ -226,4 +252,62 @@ fn the_side_decides_which_token_has_to_be_quotable() {
         )
         .is_ok()
     );
+}
+
+fn sui_draft() -> LevelDraft {
+    LevelDraft {
+        id: "l-sui".into(),
+        venue: "cetus".into(),
+        chain: "sui".into(),
+        token_in: "hBTC".into(),
+        token_out: "SUI".into(),
+        side: "sell".into(),
+        trigger_price_usd: 50_000.0,
+        amount: "0.001".into(),
+        slippage_bps: 100,
+    }
+}
+
+#[test]
+fn a_sui_rule_stores_the_coin_type_with_its_case_intact() {
+    let level = accept(sui_draft());
+
+    assert_eq!(level.chain, "sui");
+    assert_eq!(level.token_in, "0xfce::btc::BTC");
+    assert_eq!(level.token_out, "0x2::sui::SUI");
+    assert_eq!(level.venue, VenueName::Cetus);
+    assert_eq!(level.amount_decimals, 8);
+}
+
+#[test]
+fn an_evm_rule_still_stores_the_symbol() {
+    let level = accept(draft());
+    assert_eq!(level.token_in, "USDC");
+    assert_eq!(level.token_out, "WETH");
+}
+
+#[test]
+fn a_venue_that_does_not_trade_the_chains_family_is_refused() {
+    let error = reject(LevelDraft {
+        venue: "uniswap".into(),
+        ..sui_draft()
+    });
+    assert!(error.contains("does not trade"), "unclear: {error}");
+}
+
+#[test]
+fn a_sui_rule_is_priced_through_its_reference() {
+    assert!(validate_level(&tokens(), MAX_SLIPPAGE_BPS, &prices(), &sui_draft()).is_ok());
+}
+
+#[test]
+fn a_coin_without_a_price_reference_cannot_be_the_priced_side() {
+    let error = reject(LevelDraft {
+        token_in: "SUI".into(),
+        token_out: "hBTC".into(),
+        side: "sell".into(),
+        amount: "1".into(),
+        ..sui_draft()
+    });
+    assert!(error.contains("priced on"), "unclear: {error}");
 }

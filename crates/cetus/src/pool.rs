@@ -1,10 +1,15 @@
+use std::str::FromStr;
+
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use sui_rpc::Client;
 use sui_rpc::field::{FieldMask, FieldMaskUtil};
 use sui_rpc::proto::sui::rpc::v2::{
-    GetCoinInfoRequest, GetObjectRequest, ListDynamicFieldsRequest,
+    GetCoinInfoRequest, GetObjectRequest, ListDynamicFieldsRequest, ListOwnedObjectsRequest,
 };
+use sui_sdk_types::Address;
+use sui_transaction_builder::{ObjectInput, TransactionBuilder};
+use tempo_agentic_domain::normalize_coin_type;
 
 use crate::swap_math::{PoolState, TickData};
 
@@ -24,6 +29,56 @@ pub async fn fetch_coin_decimals(client: &mut Client, coin_type: &str) -> Result
         .with_context(|| format!("{coin_type} has no published CoinMetadata"))?
         .try_into()
         .context("coin decimals out of u8 range")
+}
+
+pub async fn fund_exact_coin(
+    client: &mut Client,
+    builder: &mut TransactionBuilder,
+    owner: Address,
+    coin_type: &str,
+    amount: u64,
+) -> Result<sui_transaction_builder::Argument> {
+    let mut request = ListOwnedObjectsRequest::default();
+    request.owner = Some(owner.to_string());
+    request.object_type = Some(format!("0x2::coin::Coin<{coin_type}>"));
+    request.page_size = Some(50);
+    request.read_mask = Some(FieldMask::from_paths(["object_id", "balance"]));
+    let response = client
+        .state_client()
+        .list_owned_objects(request)
+        .await
+        .with_context(|| format!("failed to list owned {coin_type} coins"))?
+        .into_inner();
+
+    let mut total = 0u64;
+    let mut coin_ids = Vec::new();
+    for object in response.objects {
+        let Some(id) = object.object_id else {
+            continue;
+        };
+        coin_ids.push(id);
+        total = total.saturating_add(object.balance.unwrap_or_default());
+        if total >= amount {
+            break;
+        }
+    }
+    if total < amount {
+        bail!("insufficient {coin_type} balance: have {total}, need {amount}");
+    }
+
+    let mut coin_args = Vec::new();
+    for id in &coin_ids {
+        let address =
+            Address::from_str(id).with_context(|| format!("invalid coin object id {id}"))?;
+        coin_args.push(builder.object(ObjectInput::new(address)));
+    }
+    let primary = coin_args[0];
+    if coin_args.len() > 1 {
+        builder.merge_coins(primary, coin_args[1..].to_vec());
+    }
+    let amount_arg = builder.pure(&amount);
+    let split = builder.split_coins(primary, vec![amount_arg]);
+    Ok(split[0])
 }
 
 /// Discovered pool metadata for a coin pair.
@@ -288,14 +343,6 @@ pub fn parse_pool_type_params(object_type: &str) -> Result<(String, String)> {
 
 fn coin_types_equal(a: &str, b: &str) -> bool {
     normalize_coin_type(a) == normalize_coin_type(b)
-}
-
-fn normalize_coin_type(coin_type: &str) -> String {
-    let Some((address, rest)) = coin_type.split_once("::") else {
-        return coin_type.to_string();
-    };
-    let trimmed = address.trim_start_matches("0x").trim_start_matches('0');
-    format!("0x{trimmed}::{rest}")
 }
 
 fn prost_types_value_to_json(value: &prost_types::Value) -> Value {

@@ -4,6 +4,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
+use tempo_agentic_domain::{normalize_coin_type, validate_coin_type};
 
 /// Application configuration loaded from JSON.
 #[derive(Clone, Debug, Deserialize)]
@@ -77,20 +78,42 @@ pub struct EvmToken {
 }
 
 /// Configuration for Sui blockchain integration.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct SuiConfig {
     pub enabled: bool,
+    #[serde(default)]
     pub network: SuiNetwork,
+    #[serde(default)]
     pub rpc_url: String,
     /// Ceiling on what one swap may spend on gas, in MIST.
     #[serde(default = "default_sui_gas_budget")]
     pub gas_budget: u64,
+    /// Tradable coins keyed by symbol.
+    #[serde(default)]
+    pub coins: HashMap<String, SuiCoin>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct SuiCoin {
+    /// Fully qualified Move type.
+    pub coin_type: String,
+    pub decimals: u8,
+    /// Feed reference; optional when this is never the priced side.
+    #[serde(default)]
+    pub price_ref: Option<PriceRef>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct PriceRef {
+    pub chain_id: u64,
+    pub address: String,
 }
 
 /// Sui network used to resolve venue package and object IDs.
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SuiNetwork {
+    #[default]
     Testnet,
     Mainnet,
 }
@@ -129,8 +152,8 @@ impl Config {
         validate_env_name(&self.graph.api_key_env).context("The Graph API key env name")?;
         validate_positive_decimal(&self.graph.min_pool_tvl_usd)
             .context("graph.min_pool_tvl_usd")?;
-        if self.evm.chains.is_empty() {
-            bail!("configure at least one EVM chain");
+        if self.evm.chains.is_empty() && !self.sui.enabled {
+            bail!("configure at least one EVM chain, or enable Sui");
         }
         self.validate_keys()?;
         let mut chain_ids = HashSet::new();
@@ -171,6 +194,39 @@ impl Config {
         }
         if self.sui.enabled {
             validate_http_url(&self.sui.rpc_url).context("Sui RPC URL")?;
+            self.validate_sui_coins()?;
+        }
+        Ok(())
+    }
+
+    fn validate_sui_coins(&self) -> Result<()> {
+        if self.sui.coins.len() < 2 {
+            bail!("sui.coins must configure at least two coins to trade between");
+        }
+        let mut symbols = HashSet::new();
+        let mut coin_types = HashSet::new();
+        for (symbol, coin) in &self.sui.coins {
+            if !symbols.insert(symbol.to_ascii_uppercase()) {
+                bail!("sui.coins configures {symbol} more than once");
+            }
+            validate_coin_type(&coin.coin_type)
+                .with_context(|| format!("sui.coins.{symbol}.coin_type"))?;
+            if !coin_types.insert(normalize_coin_type(&coin.coin_type)) {
+                bail!("sui.coins maps two symbols onto {}", coin.coin_type);
+            }
+            if coin.decimals > 38 {
+                bail!("sui.coins.{symbol} has unsupported decimals");
+            }
+            if let Some(price_ref) = &coin.price_ref {
+                if !is_supported_evm_chain(price_ref.chain_id) {
+                    bail!(
+                        "sui.coins.{symbol}.price_ref points at unsupported chain {}",
+                        price_ref.chain_id
+                    );
+                }
+                validate_hex_address(&price_ref.address)
+                    .with_context(|| format!("sui.coins.{symbol}.price_ref.address"))?;
+            }
         }
         Ok(())
     }
@@ -350,6 +406,95 @@ mod tests {
         ));
         std::fs::write(&path, body).unwrap();
         path
+    }
+
+    fn with_sui(name: &str, sui: &str) -> anyhow::Error {
+        let mut keys = Vec::new();
+        for family in ["evm", "sui"] {
+            let path = std::env::temp_dir().join(format!(
+                "tempo-agentic-config-{}-{name}-{family}.key",
+                std::process::id()
+            ));
+            std::fs::write(&path, "0xabc").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            keys.push(path);
+        }
+        let body = WITHOUT_KEY
+            .replace(
+                r#""keys": { "evm": "/tmp/tempo-agentic-test/absent.key" }"#,
+                &format!(
+                    r#""keys": {{ "evm": "{}", "sui": "{}" }}"#,
+                    keys[0].display(),
+                    keys[1].display()
+                ),
+            )
+            .replace(
+                r#""sui": { "enabled": false, "network": "testnet", "rpc_url": "https://example.invalid" }"#,
+                sui,
+            );
+        let path = scratch_config(name, &body);
+        let error = Config::load(&path).expect_err("a checked load has to refuse it");
+        let _ = std::fs::remove_file(&path);
+        for key in keys {
+            let _ = std::fs::remove_file(key);
+        }
+        error
+    }
+
+    const SUI_COIN: &str = r#""SUI": { "coin_type": "0x2::sui::SUI", "decimals": 9,
+        "price_ref": { "chain_id": 1, "address": "0x0000000000000000000000000000000000000003" } }"#;
+
+    #[test]
+    fn enabling_sui_with_a_single_coin_is_refused() {
+        let error = with_sui(
+            "sui-one-coin",
+            &format!(
+                r#""sui": {{ "enabled": true, "network": "testnet",
+                "rpc_url": "https://example.invalid", "coins": {{ {SUI_COIN} }} }}"#
+            ),
+        );
+        assert!(
+            format!("{error:#}").contains("at least two coins"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn a_coin_type_that_is_not_fully_qualified_is_refused() {
+        let error = with_sui(
+            "sui-bad-type",
+            &format!(
+                r#""sui": {{ "enabled": true, "network": "testnet",
+                "rpc_url": "https://example.invalid", "coins": {{ {SUI_COIN},
+                "hBTC": {{ "coin_type": "hBTC", "decimals": 8,
+                    "price_ref": {{ "chain_id": 1, "address": "0x0000000000000000000000000000000000000004" }} }} }} }}"#
+            ),
+        );
+        assert!(
+            format!("{error:#}").contains("fully-qualified"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn a_price_reference_on_an_unsupported_chain_is_refused() {
+        let error = with_sui(
+            "sui-bad-ref",
+            &format!(
+                r#""sui": {{ "enabled": true, "network": "testnet",
+                "rpc_url": "https://example.invalid", "coins": {{ {SUI_COIN},
+                "hBTC": {{ "coin_type": "0xfce::btc::BTC", "decimals": 8,
+                    "price_ref": {{ "chain_id": 999, "address": "0x0000000000000000000000000000000000000004" }} }} }} }}"#
+            ),
+        );
+        assert!(
+            format!("{error:#}").contains("unsupported chain 999"),
+            "{error:#}"
+        );
     }
 
     #[test]
